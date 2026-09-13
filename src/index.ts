@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { Bot, InlineKeyboard, Keyboard } from "grammy";
+import { Bot, Context, InlineKeyboard, Keyboard } from "grammy";
 import { toJalaali } from "jalaali-js";
 
 const token = process.env.BOT_TOKEN;
@@ -7,10 +7,18 @@ if (!token) {
   throw new Error("BOT_TOKEN is not set. Did you create a .env file?");
 }
 
+// Used by /gold; checked lazily so a missing key only breaks that one command.
+const brsApiKey = process.env.BRS_API_KEY;
+
 const bot = new Bot(token);
 
 // Reply keyboard shown to the user, with buttons mirroring the commands below.
-const mainKeyboard = new Keyboard().text("Restart").text("Today").resized();
+const mainKeyboard = new Keyboard()
+  .text("Restart")
+  .text("Today")
+  .row()
+  .text("Gold Price")
+  .resized();
 
 // Persian names for weekdays (indexed by JS Date#getDay(), 0 = Sunday) and months.
 const persianWeekdays = [
@@ -60,6 +68,61 @@ function formatTodayMessage(date: Date): string {
   return `${jalaliLine}\n${gregorianLine}`;
 }
 
+// One entry in BrsApi's "gold" array (see https://brsapi.ir/free-api-gold-currency-webservice/).
+interface GoldPriceItem {
+  date: string;
+  time: string;
+  symbol: string;
+  name: string;
+  price: number;
+  unit: string;
+}
+
+// Symbols to include in the /gold reply, in display order (18K gold is required by spec).
+const featuredGoldSymbols = ["IR_GOLD_18K", "IR_GOLD_24K", "IR_COIN_EMAMI"];
+
+// Fetches live prices from BrsApi and formats the featured gold/coin entries.
+async function fetchGoldPriceMessage(): Promise<string> {
+  if (!brsApiKey) {
+    throw new Error("BRS_API_KEY is not set");
+  }
+
+  const response = await fetch(
+    `https://Api.BrsApi.ir/Market/Gold_Currency.php?key=${brsApiKey}`
+  );
+  if (!response.ok) {
+    throw new Error(`BrsApi request failed with status ${response.status}`);
+  }
+
+  const data = (await response.json()) as { gold: GoldPriceItem[] };
+  const featured = data.gold.filter((item) =>
+    featuredGoldSymbols.includes(item.symbol)
+  );
+  const gold18k = featured.find((item) => item.symbol === "IR_GOLD_18K");
+  if (!gold18k) {
+    throw new Error("18K gold entry missing from BrsApi response");
+  }
+
+  const lines = featured.map(
+    (item) => `${item.name}: ${item.price.toLocaleString("en-US")} ${item.unit}`
+  );
+
+  return [`قیمت لحظه‌ای طلا و سکه (${gold18k.date} - ${gold18k.time}):`, ...lines].join("\n");
+}
+
+// Shared handler for both /gold and the "Gold Price" button.
+async function replyWithGoldPrice(ctx: Context) {
+  try {
+    const message = await fetchGoldPriceMessage();
+    await ctx.reply(message);
+  } catch (error) {
+    console.error("Failed to fetch gold prices:", error);
+    await ctx.reply(
+      "متاسفانه در حال حاضر امکان دریافت قیمت طلا وجود ندارد. لطفاً بعداً دوباره تلاش کنید."
+    );
+  }
+}
+
 // Inline keyboard shown by /menu, with one callback_data value per option.
 const optionsKeyboard = new InlineKeyboard()
   .text("Option A", "opt_a")
@@ -75,12 +138,14 @@ bot.command("menu", (ctx) =>
   ctx.reply("Choose an option:", { reply_markup: optionsKeyboard })
 );
 bot.command("today", (ctx) => ctx.reply(formatTodayMessage(new Date())));
+bot.command("gold", replyWithGoldPrice);
 
 // Reply keyboard buttons trigger the same behavior as their matching commands.
 bot.hears("Restart", (ctx) =>
   ctx.reply("Hello! I'm a simple bot 👋", { reply_markup: mainKeyboard })
 );
 bot.hears("Today", (ctx) => ctx.reply(formatTodayMessage(new Date())));
+bot.hears("Gold Price", replyWithGoldPrice);
 
 // Inline menu option taps: update the message and drop the keyboard.
 const optionLabels: Record<string, string> = {
