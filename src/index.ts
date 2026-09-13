@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { Bot, Context, InlineKeyboard, Keyboard } from "grammy";
-import { toJalaali } from "jalaali-js";
+import { isLeapJalaaliYear, j2d, toJalaali } from "jalaali-js";
 
 const token = process.env.BOT_TOKEN;
 if (!token) {
@@ -53,7 +53,16 @@ const toPersianDigits = (n: number): string =>
     .map((digit) => persianDigits[Number(digit)])
     .join("");
 
-// Builds "Today is <Weekday>, <Month> <Day>, <Year>" / Persian equivalent for a given date.
+// Length of the text-based year-progress bar, in segments.
+const progressBarLength = 20;
+
+// Builds "██████░░░░"-style bar with `filledCount` of `progressBarLength` segments filled.
+function buildProgressBar(filledCount: number): string {
+  return "█".repeat(filledCount) + "░".repeat(progressBarLength - filledCount);
+}
+
+// Builds "Today is <Weekday>, <Month> <Day>, <Year>" / Persian equivalent, plus how much
+// of the current Jalali year has elapsed, for a given date.
 function formatTodayMessage(date: Date): string {
   const { jy, jm, jd } = toJalaali(date);
   const jalaliLine = `امروز ${persianWeekdays[date.getDay()]}، ${toPersianDigits(jd)} ${persianMonths[jm - 1]} ${toPersianDigits(jy)} است`;
@@ -65,7 +74,15 @@ function formatTodayMessage(date: Date): string {
     year: "numeric",
   })}`;
 
-  return `${jalaliLine}\n${gregorianLine}`;
+  // Day-of-year via Julian Day numbers: distance from Farvardin 1st plus one.
+  const dayOfYear = j2d(jy, jm, jd) - j2d(jy, 1, 1) + 1;
+  const totalDaysInYear = isLeapJalaaliYear(jy) ? 366 : 365;
+  const percentPassed = Math.round((dayOfYear / totalDaysInYear) * 100);
+  const filledCount = Math.round((percentPassed / 100) * progressBarLength);
+
+  const progressLine = `${toPersianDigits(percentPassed)}% از سال ${toPersianDigits(jy)} گذشته است`;
+
+  return [jalaliLine, gregorianLine, "", progressLine, buildProgressBar(filledCount)].join("\n");
 }
 
 // One entry in BrsApi's "gold" array (see https://brsapi.ir/free-api-gold-currency-webservice/).
