@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { Bot, InlineKeyboard, Keyboard } from "grammy";
+import { toJalaali } from "jalaali-js";
 
 const token = process.env.BOT_TOKEN;
 if (!token) {
@@ -13,6 +14,7 @@ const mainKeyboard = new Keyboard()
   .text("Help")
   .text("About")
   .text("Restart")
+  .text("Today")
   .resized();
 
 const helpText = [
@@ -21,7 +23,56 @@ const helpText = [
   "/help - show this list of commands",
   "/about - learn what this bot is",
   "/menu - show an inline option menu",
+  "/today - show today's date (Persian and Gregorian)",
 ].join("\n");
+
+// Persian names for weekdays (indexed by JS Date#getDay(), 0 = Sunday) and months.
+const persianWeekdays = [
+  "یکشنبه",
+  "دوشنبه",
+  "سه‌شنبه",
+  "چهارشنبه",
+  "پنجشنبه",
+  "جمعه",
+  "شنبه",
+];
+const persianMonths = [
+  "فروردین",
+  "اردیبهشت",
+  "خرداد",
+  "تیر",
+  "مرداد",
+  "شهریور",
+  "مهر",
+  "آبان",
+  "آذر",
+  "دی",
+  "بهمن",
+  "اسفند",
+];
+const persianDigits = ["۰", "۱", "۲", "۳", "۴", "۵", "۶", "۷", "۸", "۹"];
+
+// Converts a non-negative integer's digits to their Persian-numeral form.
+const toPersianDigits = (n: number): string =>
+  String(n)
+    .split("")
+    .map((digit) => persianDigits[Number(digit)])
+    .join("");
+
+// Builds "Today is <Weekday>, <Month> <Day>, <Year>" / Persian equivalent for a given date.
+function formatTodayMessage(date: Date): string {
+  const { jy, jm, jd } = toJalaali(date);
+  const jalaliLine = `امروز ${persianWeekdays[date.getDay()]}، ${toPersianDigits(jd)} ${persianMonths[jm - 1]} ${toPersianDigits(jy)} است`;
+
+  const gregorianLine = `Today is ${date.toLocaleDateString("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  })}`;
+
+  return `${jalaliLine}\n${gregorianLine}`;
+}
 
 const aboutText = "This bot is a small learning project built with grammY and TypeScript.";
 
@@ -41,6 +92,7 @@ bot.command("about", (ctx) => ctx.reply(aboutText));
 bot.command("menu", (ctx) =>
   ctx.reply("Choose an option:", { reply_markup: optionsKeyboard })
 );
+bot.command("today", (ctx) => ctx.reply(formatTodayMessage(new Date())));
 
 // Reply keyboard buttons trigger the same behavior as their matching commands.
 bot.hears("Help", (ctx) => ctx.reply(helpText));
@@ -48,6 +100,7 @@ bot.hears("About", (ctx) => ctx.reply(aboutText));
 bot.hears("Restart", (ctx) =>
   ctx.reply("Hello! I'm a simple bot 👋", { reply_markup: mainKeyboard })
 );
+bot.hears("Today", (ctx) => ctx.reply(formatTodayMessage(new Date())));
 
 // Inline menu option taps: update the message and drop the keyboard.
 const optionLabels: Record<string, string> = {
