@@ -10,21 +10,7 @@ if (!token) {
 const bot = new Bot(token);
 
 // Reply keyboard shown to the user, with buttons mirroring the commands below.
-const mainKeyboard = new Keyboard()
-  .text("Help")
-  .text("About")
-  .text("Restart")
-  .text("Today")
-  .resized();
-
-const helpText = [
-  "Available commands:",
-  "/start - show the welcome message and buttons",
-  "/help - show this list of commands",
-  "/about - learn what this bot is",
-  "/menu - show an inline option menu",
-  "/today - show today's date (Persian and Gregorian)",
-].join("\n");
+const mainKeyboard = new Keyboard().text("Restart").text("Today").resized();
 
 // Persian names for weekdays (indexed by JS Date#getDay(), 0 = Sunday) and months.
 const persianWeekdays = [
@@ -74,8 +60,6 @@ function formatTodayMessage(date: Date): string {
   return `${jalaliLine}\n${gregorianLine}`;
 }
 
-const aboutText = "This bot is a small learning project built with grammY and TypeScript.";
-
 // Inline keyboard shown by /menu, with one callback_data value per option.
 const optionsKeyboard = new InlineKeyboard()
   .text("Option A", "opt_a")
@@ -87,16 +71,12 @@ bot.command("start", (ctx) =>
   ctx.reply("Hello! I'm a simple bot 👋", { reply_markup: mainKeyboard })
 );
 
-bot.command("help", (ctx) => ctx.reply(helpText));
-bot.command("about", (ctx) => ctx.reply(aboutText));
 bot.command("menu", (ctx) =>
   ctx.reply("Choose an option:", { reply_markup: optionsKeyboard })
 );
 bot.command("today", (ctx) => ctx.reply(formatTodayMessage(new Date())));
 
 // Reply keyboard buttons trigger the same behavior as their matching commands.
-bot.hears("Help", (ctx) => ctx.reply(helpText));
-bot.hears("About", (ctx) => ctx.reply(aboutText));
 bot.hears("Restart", (ctx) =>
   ctx.reply("Hello! I'm a simple bot 👋", { reply_markup: mainKeyboard })
 );
