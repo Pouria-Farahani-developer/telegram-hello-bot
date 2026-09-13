@@ -61,8 +61,12 @@ function buildProgressBar(filledCount: number): string {
   return "█".repeat(filledCount) + "░".repeat(progressBarLength - filledCount);
 }
 
+// True if the given Gregorian year is a leap year.
+const isLeapGregorianYear = (year: number): boolean =>
+  (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+
 // Builds "Today is <Weekday>, <Month> <Day>, <Year>" / Persian equivalent, plus how much
-// of the current Jalali year has elapsed, for a given date.
+// of the current Jalali and Gregorian years have elapsed, for a given date.
 function formatTodayMessage(date: Date): string {
   const { jy, jm, jd } = toJalaali(date);
   const jalaliLine = `امروز ${persianWeekdays[date.getDay()]}، ${toPersianDigits(jd)} ${persianMonths[jm - 1]} ${toPersianDigits(jy)} است`;
@@ -74,15 +78,32 @@ function formatTodayMessage(date: Date): string {
     year: "numeric",
   })}`;
 
-  // Day-of-year via Julian Day numbers: distance from Farvardin 1st plus one.
-  const dayOfYear = j2d(jy, jm, jd) - j2d(jy, 1, 1) + 1;
-  const totalDaysInYear = isLeapJalaaliYear(jy) ? 366 : 365;
-  const percentPassed = Math.round((dayOfYear / totalDaysInYear) * 100);
-  const filledCount = Math.round((percentPassed / 100) * progressBarLength);
+  // Jalali year progress, via Julian Day numbers: distance from Farvardin 1st plus one.
+  const jalaliDayOfYear = j2d(jy, jm, jd) - j2d(jy, 1, 1) + 1;
+  const jalaliTotalDays = isLeapJalaaliYear(jy) ? 366 : 365;
+  const jalaliPercent = Math.round((jalaliDayOfYear / jalaliTotalDays) * 100);
+  const jalaliFilledCount = Math.round((jalaliPercent / 100) * progressBarLength);
+  const jalaliProgressLine = `${toPersianDigits(jalaliPercent)}% از سال ${toPersianDigits(jy)} گذشته است`;
 
-  const progressLine = `${toPersianDigits(percentPassed)}% از سال ${toPersianDigits(jy)} گذشته است`;
+  // Gregorian year progress, via plain Date arithmetic (both dates at local midnight).
+  const gy = date.getFullYear();
+  const msPerDay = 24 * 60 * 60 * 1000;
+  const gregorianDayOfYear =
+    Math.round((Date.UTC(gy, date.getMonth(), date.getDate()) - Date.UTC(gy, 0, 1)) / msPerDay) + 1;
+  const gregorianTotalDays = isLeapGregorianYear(gy) ? 366 : 365;
+  const gregorianPercent = Math.round((gregorianDayOfYear / gregorianTotalDays) * 100);
+  const gregorianFilledCount = Math.round((gregorianPercent / 100) * progressBarLength);
+  const gregorianProgressLine = `${gregorianPercent}% از سال ${gy} گذشته است`;
 
-  return [jalaliLine, gregorianLine, "", progressLine, buildProgressBar(filledCount)].join("\n");
+  return [
+    jalaliLine,
+    gregorianLine,
+    "",
+    jalaliProgressLine,
+    buildProgressBar(jalaliFilledCount),
+    gregorianProgressLine,
+    buildProgressBar(gregorianFilledCount),
+  ].join("\n");
 }
 
 // One entry in BrsApi's "gold" array (see https://brsapi.ir/free-api-gold-currency-webservice/).
