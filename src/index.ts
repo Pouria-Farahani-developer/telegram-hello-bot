@@ -188,7 +188,7 @@ async function replyWithGoldPrice(ctx: Context) {
 function buildTrelloAuthorizeUrl(apiKey: string): string {
   const params = new URLSearchParams({
     expiration: "never",
-    scope: "read",
+    scope: "read,write",
     response_type: "token",
     name: "TelegramBot",
     key: apiKey,
