@@ -10,6 +10,7 @@ import {
   saveDoneListSelection,
   saveListSelection,
   saveTrelloToken,
+  TrelloSelection,
 } from "./db.js";
 
 const token = process.env.BOT_TOKEN;
@@ -41,7 +42,10 @@ const mainKeyboard = new Keyboard()
   .text("Connect Trello")
   .row()
   .text("Select Board")
-  .text("Tasks")
+  .row()
+  .text("Todo Tasks")
+  .text("Doing Tasks")
+  .text("Done Tasks")
   .resized();
 
 // Persian names for weekdays (indexed by JS Date#getDay(), 0 = Sunday) and months.
@@ -363,10 +367,33 @@ interface PipelineStage {
   listName: string;
 }
 
-// Shared handler for both /tasks and the "Tasks" button. Shows cards from every known
-// stage (todo, doing if found, done if found); each card gets one button per OTHER
-// stage, side by side, so a card can move to either of the other two lists directly.
-async function replyWithTasks(ctx: MyContext): Promise<void> {
+// Fetches the board's current lists and returns whichever of todo/doing/done stages
+// exist, with fresh names (in case a list was renamed since /select_board).
+async function getPipelineStages(
+  apiKey: string,
+  userToken: string,
+  selection: TrelloSelection
+): Promise<PipelineStage[]> {
+  const boardLists = await fetchTrelloLists(apiKey, userToken, selection.boardId);
+  const nameOf = (listId: string) => boardLists.find((l) => l.id === listId)?.name ?? listId;
+
+  return [
+    { listId: selection.listId, listName: nameOf(selection.listId) },
+    ...(selection.doingListId
+      ? [{ listId: selection.doingListId, listName: nameOf(selection.doingListId) }]
+      : []),
+    ...(selection.doneListId
+      ? [{ listId: selection.doneListId, listName: nameOf(selection.doneListId) }]
+      : []),
+  ];
+}
+
+// Shows cards from exactly ONE pipeline stage (not the other two), each with a button
+// per other stage, side by side, so a card can move directly to either of them.
+async function replyWithStageTasks(
+  ctx: MyContext,
+  stageKey: "todo" | "doing" | "done"
+): Promise<void> {
   const connection = requireTrelloConnection(ctx);
   if (!connection) {
     await ctx.reply("ابتدا با /connect_trello حساب Trello خود را وصل کنید.");
@@ -379,47 +406,43 @@ async function replyWithTasks(ctx: MyContext): Promise<void> {
     return;
   }
 
-  try {
-    // Fetch real, current list names (not just ids) so button labels stay accurate
-    // even if a list gets renamed after /select_board.
-    const boardLists = await fetchTrelloLists(connection.apiKey, connection.userToken, selection.boardId);
-    const nameOf = (listId: string) => boardLists.find((l) => l.id === listId)?.name ?? listId;
-
-    const stages: PipelineStage[] = [
-      { listId: selection.listId, listName: nameOf(selection.listId) },
-      ...(selection.doingListId
-        ? [{ listId: selection.doingListId, listName: nameOf(selection.doingListId) }]
-        : []),
-      ...(selection.doneListId
-        ? [{ listId: selection.doneListId, listName: nameOf(selection.doneListId) }]
-        : []),
-    ];
-
-    const cardsByStage = await Promise.all(
-      stages.map((stage) => fetchTrelloCards(connection.apiKey, connection.userToken, stage.listId))
+  const targetListId =
+    stageKey === "todo"
+      ? selection.listId
+      : stageKey === "doing"
+        ? selection.doingListId
+        : selection.doneListId;
+  if (!targetListId) {
+    const missingName = stageKey === "doing" ? "Doing" : "Done";
+    await ctx.reply(
+      `لیست «${missingName}» برای این بورد پیدا نشد. با /select_board دوباره تلاش کنید.`
     );
+    return;
+  }
 
-    if (cardsByStage.every((cards) => cards.length === 0)) {
-      await ctx.reply(`هیچ کارتی در بورد «${selection.boardName}» پیدا نشد 🎉`);
+  try {
+    const stages = await getPipelineStages(connection.apiKey, connection.userToken, selection);
+    const currentStage = stages.find((stage) => stage.listId === targetListId);
+    const otherStages = stages.filter((stage) => stage.listId !== targetListId);
+    const currentListName = currentStage?.listName ?? targetListId;
+
+    const cards = await fetchTrelloCards(connection.apiKey, connection.userToken, targetListId);
+    if (cards.length === 0) {
+      await ctx.reply(`هیچ کارتی در لیست «${currentListName}» نیست 🎉`);
       return;
     }
 
     // One message per card, each with its own row of buttons, so moving one card
     // only edits that message.
-    for (let stageIndex = 0; stageIndex < stages.length; stageIndex++) {
-      const currentStage = stages[stageIndex];
-      const otherStages = stages.filter((_, i) => i !== stageIndex);
-
-      for (const card of cardsByStage[stageIndex]) {
-        const dueLine = card.due ? `\n📅 موعد: ${formatDueDate(card.due)}` : "";
-        const keyboard = new InlineKeyboard();
-        for (const target of otherStages) {
-          keyboard.text(`➡️ ${target.listName}`, `advance_card:${card.id}:${target.listId}`);
-        }
-        await ctx.reply(`📌 ${card.name} [${currentStage.listName}]${dueLine}`, {
-          reply_markup: keyboard,
-        });
+    for (const card of cards) {
+      const dueLine = card.due ? `\n📅 موعد: ${formatDueDate(card.due)}` : "";
+      const keyboard = new InlineKeyboard();
+      for (const target of otherStages) {
+        keyboard.text(`➡️ ${target.listName}`, `advance_card:${card.id}:${target.listId}`);
       }
+      await ctx.reply(`📌 ${card.name} [${currentListName}]${dueLine}`, {
+        reply_markup: keyboard,
+      });
     }
   } catch (error) {
     console.error("Failed to fetch Trello cards:", error);
@@ -428,6 +451,10 @@ async function replyWithTasks(ctx: MyContext): Promise<void> {
     );
   }
 }
+
+const replyWithTodoTasks = (ctx: MyContext) => replyWithStageTasks(ctx, "todo");
+const replyWithDoingTasks = (ctx: MyContext) => replyWithStageTasks(ctx, "doing");
+const replyWithDoneTasks = (ctx: MyContext) => replyWithStageTasks(ctx, "done");
 
 // Inline keyboard shown by /menu, with one callback_data value per option.
 const optionsKeyboard = new InlineKeyboard()
@@ -456,7 +483,9 @@ bot.command("disconnect_trello", (ctx) => {
 });
 
 bot.command("select_board", startBoardSelection);
-bot.command("tasks", replyWithTasks);
+bot.command("tasks_todo", replyWithTodoTasks);
+bot.command("tasks_doing", replyWithDoingTasks);
+bot.command("tasks_done", replyWithDoneTasks);
 
 // Reply keyboard buttons trigger the same behavior as their matching commands.
 bot.hears("Restart", (ctx) =>
@@ -466,7 +495,9 @@ bot.hears("Today", (ctx) => ctx.reply(formatTodayMessage(new Date())));
 bot.hears("Gold Price", replyWithGoldPrice);
 bot.hears("Connect Trello", startTrelloConnection);
 bot.hears("Select Board", startBoardSelection);
-bot.hears("Tasks", replyWithTasks);
+bot.hears("Todo Tasks", replyWithTodoTasks);
+bot.hears("Doing Tasks", replyWithDoingTasks);
+bot.hears("Done Tasks", replyWithDoneTasks);
 
 // Inline menu option taps: update the message and drop the keyboard.
 const optionLabels: Record<string, string> = {
