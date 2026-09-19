@@ -6,6 +6,7 @@ import {
   getSelection,
   getTrelloToken,
   saveBoardSelection,
+  saveDoingListSelection,
   saveDoneListSelection,
   saveListSelection,
   saveTrelloToken,
@@ -356,7 +357,17 @@ function formatDueDate(due: string): string {
   });
 }
 
-// Shared handler for both /tasks and the "Tasks" button.
+// A card together with the pipeline stage it's showing under: the target list its
+// "advance" button should move it to, and the label for that button.
+interface StagedCard {
+  card: TrelloCard;
+  targetListId: string;
+  buttonLabel: string;
+}
+
+// Shared handler for both /tasks and the "Tasks" button. Shows cards from the selected
+// (todo) list and the auto-detected "doing" list, each with a button to the next stage:
+// todo → doing, doing → done. A stage with no detected target list gets no button.
 async function replyWithTasks(ctx: MyContext): Promise<void> {
   const connection = requireTrelloConnection(ctx);
   if (!connection) {
@@ -371,17 +382,39 @@ async function replyWithTasks(ctx: MyContext): Promise<void> {
   }
 
   try {
-    const cards = await fetchTrelloCards(connection.apiKey, connection.userToken, selection.listId);
-    if (cards.length === 0) {
+    const stages: { listId: string; targetListId: string | null; buttonLabel: string }[] = [
+      { listId: selection.listId, targetListId: selection.doingListId, buttonLabel: "➡️ Doing" },
+    ];
+    if (selection.doingListId) {
+      stages.push({
+        listId: selection.doingListId,
+        targetListId: selection.doneListId,
+        buttonLabel: "✅ Mark done",
+      });
+    }
+
+    const staged: StagedCard[] = [];
+    for (const stage of stages) {
+      const cards = await fetchTrelloCards(connection.apiKey, connection.userToken, stage.listId);
+      for (const card of cards) {
+        if (stage.targetListId) {
+          staged.push({ card, targetListId: stage.targetListId, buttonLabel: stage.buttonLabel });
+        } else {
+          staged.push({ card, targetListId: "", buttonLabel: "" });
+        }
+      }
+    }
+
+    if (staged.length === 0) {
       await ctx.reply(`هیچ کارتی در لیست «${selection.listName}» نیست 🎉`);
       return;
     }
 
-    // One message per card, each with its own button, so marking one done only edits that message.
-    for (const card of cards) {
+    // One message per card, each with its own button, so advancing one only edits that message.
+    for (const { card, targetListId, buttonLabel } of staged) {
       const dueLine = card.due ? `\n📅 موعد: ${formatDueDate(card.due)}` : "";
-      const keyboard = selection.doneListId
-        ? new InlineKeyboard().text("✅ Mark done", `done_card:${card.id}`)
+      const keyboard = targetListId
+        ? new InlineKeyboard().text(buttonLabel, `advance_card:${card.id}:${targetListId}`)
         : undefined;
       await ctx.reply(`📌 ${card.name}${dueLine}`, keyboard && { reply_markup: keyboard });
     }
@@ -505,18 +538,26 @@ bot.callbackQuery(/^select_list:([^:]+):(.+)$/, async (ctx) => {
     if (!list) {
       throw new Error("Selected list no longer exists on the board");
     }
-    // Auto-detect a "done" list (stage 3, option A) so /tasks can offer a "Mark done" button.
+    // Auto-detect the "doing" and "done" lists so /tasks can offer a next-stage button:
+    // cards in the selected (todo) list advance to "doing", cards in "doing" advance to "done".
+    const doingList = lists.find((item) => /doing/i.test(item.name));
     const doneList = lists.find((item) => /done/i.test(item.name));
 
     saveBoardSelection(connection.userId, board.id, board.name);
     saveListSelection(connection.userId, list.id, list.name);
+    saveDoingListSelection(connection.userId, doingList?.id ?? null);
     saveDoneListSelection(connection.userId, doneList?.id ?? null);
 
-    const doneNote = doneList
-      ? ""
-      : "\n(لیستی به نام «Done» پیدا نشد، پس دکمه‌ی «انجام شد» غیرفعال می‌ماند.)";
+    const missing = [
+      !doingList && "«Doing»",
+      !doneList && "«Done»",
+    ].filter((name): name is string => Boolean(name));
+    const missingNote =
+      missing.length > 0
+        ? `\n(لیست ${missing.join(" و ")} پیدا نشد، پس دکمه‌ی انتقال مربوطه غیرفعال می‌ماند.)`
+        : "";
     await ctx.editMessageText(
-      `✅ به بورد «${board.name}» و لیست «${list.name}» وصل شدید.${doneNote}\nبرای دیدن کارت‌ها /tasks را بزنید.`,
+      `✅ به بورد «${board.name}» و لیست «${list.name}» وصل شدید.${missingNote}\nبرای دیدن کارت‌ها /tasks را بزنید.`,
       { reply_markup: new InlineKeyboard() }
     );
     await ctx.answerCallbackQuery();
@@ -529,38 +570,39 @@ bot.callbackQuery(/^select_list:([^:]+):(.+)$/, async (ctx) => {
   }
 });
 
-// "Mark done" tapped under a card in /tasks: moves the card to the detected done list.
-bot.callbackQuery(/^done_card:(.+)$/, async (ctx) => {
-  const cardId = ctx.match[1];
+// A stage-advance button tapped in /tasks (todo→doing or doing→done): moves the card
+// to the target list embedded in the callback data.
+bot.callbackQuery(/^advance_card:([^:]+):(.+)$/, async (ctx) => {
+  const [, cardId, targetListId] = ctx.match;
   const connection = requireTrelloConnection(ctx);
-  const selection = connection ? getSelection(connection.userId) : null;
-
-  if (!connection || !selection?.doneListId) {
-    await ctx.editMessageText(
-      "اتصال یا لیست «انجام‌شده» شما یافت نشد. لطفاً دوباره با /connect_trello یا /select_board تلاش کنید."
-    );
+  if (!connection) {
+    await ctx.editMessageText("اتصال Trello شما یافت نشد. لطفاً دوباره با /connect_trello تلاش کنید.");
     await ctx.answerCallbackQuery();
     return;
   }
 
   try {
     const response = await fetch(
-      `https://api.trello.com/1/cards/${cardId}?idList=${selection.doneListId}&key=${connection.apiKey}&token=${connection.userToken}`,
+      `https://api.trello.com/1/cards/${cardId}?idList=${targetListId}&key=${connection.apiKey}&token=${connection.userToken}`,
       { method: "PUT" }
     );
     if (!response.ok) {
       throw new Error(`Trello card update failed with status ${response.status}`);
     }
 
+    // Label the confirmation using whichever known stage the card landed in.
+    const selection = getSelection(connection.userId);
+    const doneLabel = targetListId === selection?.doneListId ? "✅ انجام شد" : "➡️ منتقل شد";
+
     const originalText = ctx.callbackQuery.message?.text ?? "کارت";
-    await ctx.editMessageText(`${originalText}\n\n✅ انجام شد`, {
+    await ctx.editMessageText(`${originalText}\n\n${doneLabel}`, {
       reply_markup: new InlineKeyboard(),
     });
     await ctx.answerCallbackQuery();
   } catch (error) {
-    console.error("Failed to mark Trello card done:", error);
+    console.error("Failed to advance Trello card:", error);
     await ctx.editMessageText(
-      "مشکلی در علامت‌گذاری کارت پیش آمد. لطفاً دوباره با /connect_trello تلاش کنید."
+      "مشکلی در جابه‌جایی کارت پیش آمد. لطفاً دوباره با /connect_trello تلاش کنید."
     );
     await ctx.answerCallbackQuery();
   }

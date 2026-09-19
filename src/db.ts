@@ -22,7 +22,14 @@ const existingColumns = new Set(
     (column) => column.name
   )
 );
-for (const column of ["board_id", "board_name", "list_id", "list_name", "done_list_id"]) {
+for (const column of [
+  "board_id",
+  "board_name",
+  "list_id",
+  "list_name",
+  "doing_list_id",
+  "done_list_id",
+]) {
   if (!existingColumns.has(column)) {
     db.exec(`ALTER TABLE trello_accounts ADD COLUMN ${column} TEXT`);
   }
@@ -53,10 +60,11 @@ export interface TrelloSelection {
   boardName: string;
   listId: string;
   listName: string;
+  doingListId: string | null;
   doneListId: string | null;
 }
 
-// Saves the chosen board and clears any list/done-list picked under a previous board.
+// Saves the chosen board and clears any list/doing/done list picked under a previous board.
 export function saveBoardSelection(
   telegramUserId: number,
   boardId: string,
@@ -64,7 +72,8 @@ export function saveBoardSelection(
 ): void {
   db.prepare(
     `UPDATE trello_accounts
-     SET board_id = ?, board_name = ?, list_id = NULL, list_name = NULL, done_list_id = NULL
+     SET board_id = ?, board_name = ?, list_id = NULL, list_name = NULL,
+         doing_list_id = NULL, done_list_id = NULL
      WHERE telegram_user_id = ?`
   ).run(boardId, boardName, telegramUserId);
 }
@@ -73,6 +82,13 @@ export function saveListSelection(telegramUserId: number, listId: string, listNa
   db.prepare(
     `UPDATE trello_accounts SET list_id = ?, list_name = ? WHERE telegram_user_id = ?`
   ).run(listId, listName, telegramUserId);
+}
+
+// Records the board's auto-detected "doing" list, if any (null when none was found).
+export function saveDoingListSelection(telegramUserId: number, doingListId: string | null): void {
+  db.prepare(
+    `UPDATE trello_accounts SET doing_list_id = ? WHERE telegram_user_id = ?`
+  ).run(doingListId, telegramUserId);
 }
 
 // Records the board's auto-detected "done" list, if any (null when none was found).
@@ -86,7 +102,7 @@ export function saveDoneListSelection(telegramUserId: number, doneListId: string
 export function getSelection(telegramUserId: number): TrelloSelection | null {
   const row = db
     .prepare(
-      `SELECT board_id, board_name, list_id, list_name, done_list_id
+      `SELECT board_id, board_name, list_id, list_name, doing_list_id, done_list_id
        FROM trello_accounts WHERE telegram_user_id = ?`
     )
     .get(telegramUserId) as
@@ -95,6 +111,7 @@ export function getSelection(telegramUserId: number): TrelloSelection | null {
         board_name: string | null;
         list_id: string | null;
         list_name: string | null;
+        doing_list_id: string | null;
         done_list_id: string | null;
       }
     | undefined;
@@ -108,6 +125,7 @@ export function getSelection(telegramUserId: number): TrelloSelection | null {
     boardName: row.board_name,
     listId: row.list_id,
     listName: row.list_name,
+    doingListId: row.doing_list_id,
     doneListId: row.done_list_id,
   };
 }
