@@ -3,8 +3,10 @@ import { Bot, Context, InlineKeyboard, Keyboard, session, SessionFlavor } from "
 import { isLeapJalaaliYear, j2d, toJalaali } from "jalaali-js";
 import {
   deleteTrelloToken,
+  getSelection,
   getTrelloToken,
   saveBoardSelection,
+  saveDoneListSelection,
   saveListSelection,
   saveTrelloToken,
 } from "./db.js";
@@ -38,6 +40,7 @@ const mainKeyboard = new Keyboard()
   .text("Connect Trello")
   .row()
   .text("Select Board")
+  .text("Tasks")
   .resized();
 
 // Persian names for weekdays (indexed by JS Date#getDay(), 0 = Sunday) and months.
@@ -275,12 +278,6 @@ function fetchTrelloLists(
   );
 }
 
-function fetchTrelloList(apiKey: string, userToken: string, listId: string): Promise<TrelloEntity> {
-  return fetchTrelloJson(
-    `https://api.trello.com/1/lists/${listId}?key=${apiKey}&token=${userToken}&fields=name`
-  );
-}
-
 // Builds one inline button per Trello entity, each row containing a single button.
 function buildEntityKeyboard(
   entities: TrelloEntity[],
@@ -330,6 +327,72 @@ async function startBoardSelection(ctx: MyContext): Promise<void> {
   }
 }
 
+// One card from GET /1/lists/{id}/cards (only the fields we display are requested).
+interface TrelloCard {
+  id: string;
+  name: string;
+  due: string | null;
+}
+
+function fetchTrelloCards(
+  apiKey: string,
+  userToken: string,
+  listId: string
+): Promise<TrelloCard[]> {
+  return fetchTrelloJson(
+    `https://api.trello.com/1/lists/${listId}/cards?key=${apiKey}&token=${userToken}&fields=name,due`
+  );
+}
+
+// Readable due-date formatting, e.g. "Tue, Sep 23, 2025, 02:30 PM".
+function formatDueDate(due: string): string {
+  return new Date(due).toLocaleString("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+// Shared handler for both /tasks and the "Tasks" button.
+async function replyWithTasks(ctx: MyContext): Promise<void> {
+  const connection = requireTrelloConnection(ctx);
+  if (!connection) {
+    await ctx.reply("ابتدا با /connect_trello حساب Trello خود را وصل کنید.");
+    return;
+  }
+
+  const selection = getSelection(connection.userId);
+  if (!selection) {
+    await ctx.reply("ابتدا با /select_board یک بورد و لیست انتخاب کنید.");
+    return;
+  }
+
+  try {
+    const cards = await fetchTrelloCards(connection.apiKey, connection.userToken, selection.listId);
+    if (cards.length === 0) {
+      await ctx.reply(`هیچ کارتی در لیست «${selection.listName}» نیست 🎉`);
+      return;
+    }
+
+    // One message per card, each with its own button, so marking one done only edits that message.
+    for (const card of cards) {
+      const dueLine = card.due ? `\n📅 موعد: ${formatDueDate(card.due)}` : "";
+      const keyboard = selection.doneListId
+        ? new InlineKeyboard().text("✅ Mark done", `done_card:${card.id}`)
+        : undefined;
+      await ctx.reply(`📌 ${card.name}${dueLine}`, keyboard && { reply_markup: keyboard });
+    }
+  } catch (error) {
+    console.error("Failed to fetch Trello cards:", error);
+    await ctx.reply(
+      "مشکلی در دریافت کارت‌های Trello پیش آمد. لطفاً دوباره با /connect_trello تلاش کنید."
+    );
+  }
+}
+
 // Inline keyboard shown by /menu, with one callback_data value per option.
 const optionsKeyboard = new InlineKeyboard()
   .text("Option A", "opt_a")
@@ -357,6 +420,7 @@ bot.command("disconnect_trello", (ctx) => {
 });
 
 bot.command("select_board", startBoardSelection);
+bot.command("tasks", replyWithTasks);
 
 // Reply keyboard buttons trigger the same behavior as their matching commands.
 bot.hears("Restart", (ctx) =>
@@ -366,6 +430,7 @@ bot.hears("Today", (ctx) => ctx.reply(formatTodayMessage(new Date())));
 bot.hears("Gold Price", replyWithGoldPrice);
 bot.hears("Connect Trello", startTrelloConnection);
 bot.hears("Select Board", startBoardSelection);
+bot.hears("Tasks", replyWithTasks);
 
 // Inline menu option taps: update the message and drop the keyboard.
 const optionLabels: Record<string, string> = {
@@ -431,16 +496,27 @@ bot.callbackQuery(/^select_list:([^:]+):(.+)$/, async (ctx) => {
   }
 
   try {
-    const [board, list] = await Promise.all([
+    const [board, lists] = await Promise.all([
       fetchTrelloBoard(connection.apiKey, connection.userToken, boardId),
-      fetchTrelloList(connection.apiKey, connection.userToken, listId),
+      fetchTrelloLists(connection.apiKey, connection.userToken, boardId),
     ]);
+
+    const list = lists.find((item) => item.id === listId);
+    if (!list) {
+      throw new Error("Selected list no longer exists on the board");
+    }
+    // Auto-detect a "done" list (stage 3, option A) so /tasks can offer a "Mark done" button.
+    const doneList = lists.find((item) => /done/i.test(item.name));
 
     saveBoardSelection(connection.userId, board.id, board.name);
     saveListSelection(connection.userId, list.id, list.name);
+    saveDoneListSelection(connection.userId, doneList?.id ?? null);
 
+    const doneNote = doneList
+      ? ""
+      : "\n(لیستی به نام «Done» پیدا نشد، پس دکمه‌ی «انجام شد» غیرفعال می‌ماند.)";
     await ctx.editMessageText(
-      `✅ به بورد «${board.name}» و لیست «${list.name}» وصل شدید.\nدستور /tasks هنوز اضافه نشده — در مرحله بعد میاد.`,
+      `✅ به بورد «${board.name}» و لیست «${list.name}» وصل شدید.${doneNote}\nبرای دیدن کارت‌ها /tasks را بزنید.`,
       { reply_markup: new InlineKeyboard() }
     );
     await ctx.answerCallbackQuery();
@@ -448,6 +524,43 @@ bot.callbackQuery(/^select_list:([^:]+):(.+)$/, async (ctx) => {
     console.error("Failed to save Trello board/list selection:", error);
     await ctx.editMessageText(
       "مشکلی در ذخیره انتخاب شما پیش آمد. لطفاً دوباره با /connect_trello تلاش کنید."
+    );
+    await ctx.answerCallbackQuery();
+  }
+});
+
+// "Mark done" tapped under a card in /tasks: moves the card to the detected done list.
+bot.callbackQuery(/^done_card:(.+)$/, async (ctx) => {
+  const cardId = ctx.match[1];
+  const connection = requireTrelloConnection(ctx);
+  const selection = connection ? getSelection(connection.userId) : null;
+
+  if (!connection || !selection?.doneListId) {
+    await ctx.editMessageText(
+      "اتصال یا لیست «انجام‌شده» شما یافت نشد. لطفاً دوباره با /connect_trello یا /select_board تلاش کنید."
+    );
+    await ctx.answerCallbackQuery();
+    return;
+  }
+
+  try {
+    const response = await fetch(
+      `https://api.trello.com/1/cards/${cardId}?idList=${selection.doneListId}&key=${connection.apiKey}&token=${connection.userToken}`,
+      { method: "PUT" }
+    );
+    if (!response.ok) {
+      throw new Error(`Trello card update failed with status ${response.status}`);
+    }
+
+    const originalText = ctx.callbackQuery.message?.text ?? "کارت";
+    await ctx.editMessageText(`${originalText}\n\n✅ انجام شد`, {
+      reply_markup: new InlineKeyboard(),
+    });
+    await ctx.answerCallbackQuery();
+  } catch (error) {
+    console.error("Failed to mark Trello card done:", error);
+    await ctx.editMessageText(
+      "مشکلی در علامت‌گذاری کارت پیش آمد. لطفاً دوباره با /connect_trello تلاش کنید."
     );
     await ctx.answerCallbackQuery();
   }
