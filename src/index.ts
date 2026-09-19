@@ -36,6 +36,8 @@ const mainKeyboard = new Keyboard()
   .row()
   .text("Gold Price")
   .text("Connect Trello")
+  .row()
+  .text("Select Board")
   .resized();
 
 // Persian names for weekdays (indexed by JS Date#getDay(), 0 = Sunday) and months.
@@ -303,6 +305,31 @@ function requireTrelloConnection(
     : null;
 }
 
+// Shared handler for both /select_board and the "Select Board" button.
+async function startBoardSelection(ctx: MyContext): Promise<void> {
+  const connection = requireTrelloConnection(ctx);
+  if (!connection) {
+    await ctx.reply("ابتدا با /connect_trello حساب Trello خود را وصل کنید.");
+    return;
+  }
+
+  try {
+    const boards = await fetchTrelloBoards(connection.apiKey, connection.userToken);
+    if (boards.length === 0) {
+      await ctx.reply("هیچ بوردی در حساب Trello شما پیدا نشد.");
+      return;
+    }
+
+    const keyboard = buildEntityKeyboard(boards, (board) => `select_board:${board.id}`);
+    await ctx.reply("یکی از بوردهای خود را انتخاب کنید:", { reply_markup: keyboard });
+  } catch (error) {
+    console.error("Failed to fetch Trello boards:", error);
+    await ctx.reply(
+      "مشکلی در دریافت بوردهای Trello پیش آمد. لطفاً دوباره با /connect_trello تلاش کنید."
+    );
+  }
+}
+
 // Inline keyboard shown by /menu, with one callback_data value per option.
 const optionsKeyboard = new InlineKeyboard()
   .text("Option A", "opt_a")
@@ -329,29 +356,7 @@ bot.command("disconnect_trello", (ctx) => {
   ctx.reply("حساب Trello شما قطع شد.");
 });
 
-bot.command("select_board", async (ctx) => {
-  const connection = requireTrelloConnection(ctx);
-  if (!connection) {
-    await ctx.reply("ابتدا با /connect_trello حساب Trello خود را وصل کنید.");
-    return;
-  }
-
-  try {
-    const boards = await fetchTrelloBoards(connection.apiKey, connection.userToken);
-    if (boards.length === 0) {
-      await ctx.reply("هیچ بوردی در حساب Trello شما پیدا نشد.");
-      return;
-    }
-
-    const keyboard = buildEntityKeyboard(boards, (board) => `select_board:${board.id}`);
-    await ctx.reply("یکی از بوردهای خود را انتخاب کنید:", { reply_markup: keyboard });
-  } catch (error) {
-    console.error("Failed to fetch Trello boards:", error);
-    await ctx.reply(
-      "مشکلی در دریافت بوردهای Trello پیش آمد. لطفاً دوباره با /connect_trello تلاش کنید."
-    );
-  }
-});
+bot.command("select_board", startBoardSelection);
 
 // Reply keyboard buttons trigger the same behavior as their matching commands.
 bot.hears("Restart", (ctx) =>
@@ -360,6 +365,7 @@ bot.hears("Restart", (ctx) =>
 bot.hears("Today", (ctx) => ctx.reply(formatTodayMessage(new Date())));
 bot.hears("Gold Price", replyWithGoldPrice);
 bot.hears("Connect Trello", startTrelloConnection);
+bot.hears("Select Board", startBoardSelection);
 
 // Inline menu option taps: update the message and drop the keyboard.
 const optionLabels: Record<string, string> = {
