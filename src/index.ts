@@ -1,6 +1,7 @@
 import "dotenv/config";
-import { Bot, Context, InlineKeyboard, Keyboard } from "grammy";
+import { Bot, Context, InlineKeyboard, Keyboard, session, SessionFlavor } from "grammy";
 import { isLeapJalaaliYear, j2d, toJalaali } from "jalaali-js";
+import { deleteTrelloToken, saveTrelloToken } from "./db.js";
 
 const token = process.env.BOT_TOKEN;
 if (!token) {
@@ -10,7 +11,17 @@ if (!token) {
 // Used by /gold; checked lazily so a missing key only breaks that one command.
 const brsApiKey = process.env.BRS_API_KEY;
 
-const bot = new Bot(token);
+// Used by /connect_trello; checked lazily so a missing key only breaks that command.
+const trelloApiKey = process.env.TRELLO_API_KEY;
+
+// Session tracks whether we're waiting for the user to paste their Trello token.
+interface SessionData {
+  awaitingTrelloToken: boolean;
+}
+type MyContext = Context & SessionFlavor<SessionData>;
+
+const bot = new Bot<MyContext>(token);
+bot.use(session({ initial: (): SessionData => ({ awaitingTrelloToken: false }) }));
 
 // Reply keyboard shown to the user, with buttons mirroring the commands below.
 const mainKeyboard = new Keyboard()
@@ -161,6 +172,46 @@ async function replyWithGoldPrice(ctx: Context) {
   }
 }
 
+// Builds the Trello "authorize" link a user opens to generate their personal token.
+function buildTrelloAuthorizeUrl(apiKey: string): string {
+  const params = new URLSearchParams({
+    expiration: "never",
+    scope: "read",
+    response_type: "token",
+    name: "TelegramBot",
+    key: apiKey,
+  });
+  return `https://trello.com/1/authorize?${params.toString()}`;
+}
+
+// Checks a pasted Trello token against the API, then saves it or reports failure.
+// The token itself is never logged, only whether the check succeeded.
+async function handleTrelloToken(ctx: MyContext, pastedToken: string): Promise<void> {
+  const userId = ctx.from?.id;
+  if (!trelloApiKey || !userId) {
+    await ctx.reply("اتصال به Trello در حال حاضر پیکربندی نشده است.");
+    return;
+  }
+
+  try {
+    const response = await fetch(
+      `https://api.trello.com/1/members/me?key=${trelloApiKey}&token=${pastedToken}`
+    );
+    if (!response.ok) {
+      throw new Error(`Trello token check failed with status ${response.status}`);
+    }
+
+    const member = (await response.json()) as { username?: string };
+    saveTrelloToken(userId, pastedToken);
+    await ctx.reply(`حساب Trello شما با نام کاربری «${member.username}» متصل شد ✅`);
+  } catch (error) {
+    console.error("Failed to validate Trello token:", error);
+    await ctx.reply(
+      "توکن نامعتبر است یا مشکلی در اتصال پیش آمد. لطفاً دوباره با /connect_trello تلاش کنید."
+    );
+  }
+}
+
 // Inline keyboard shown by /menu, with one callback_data value per option.
 const optionsKeyboard = new InlineKeyboard()
   .text("Option A", "opt_a")
@@ -177,6 +228,30 @@ bot.command("menu", (ctx) =>
 );
 bot.command("today", (ctx) => ctx.reply(formatTodayMessage(new Date())));
 bot.command("gold", replyWithGoldPrice);
+
+bot.command("connect_trello", async (ctx) => {
+  if (!trelloApiKey) {
+    await ctx.reply("اتصال به Trello در حال حاضر پیکربندی نشده است.");
+    return;
+  }
+
+  ctx.session.awaitingTrelloToken = true;
+  await ctx.reply(
+    [
+      "برای اتصال حساب Trello خود:",
+      `۱. این لینک را باز کنید: ${buildTrelloAuthorizeUrl(trelloApiKey)}`,
+      "۲. روی Allow بزنید.",
+      "۳. توکنی که نمایش داده می‌شود را کپی کرده و همینجا برای من ارسال کنید.",
+    ].join("\n")
+  );
+});
+
+bot.command("disconnect_trello", (ctx) => {
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  deleteTrelloToken(userId);
+  ctx.reply("حساب Trello شما قطع شد.");
+});
 
 // Reply keyboard buttons trigger the same behavior as their matching commands.
 bot.hears("Restart", (ctx) =>
@@ -201,6 +276,16 @@ for (const [data, label] of Object.entries(optionLabels)) {
     await ctx.answerCallbackQuery();
   });
 }
+
+// Captures the message right after /connect_trello and treats it as the pasted token.
+// Slash commands are left alone so /disconnect_trello etc. still work while waiting.
+bot.on("message:text", async (ctx, next) => {
+  if (!ctx.session.awaitingTrelloToken || ctx.message.text.startsWith("/")) {
+    return next();
+  }
+  ctx.session.awaitingTrelloToken = false;
+  await handleTrelloToken(ctx, ctx.message.text.trim());
+});
 
 // Fallback: echo any other text message.
 bot.on("message:text", (ctx) => ctx.reply(ctx.message.text));

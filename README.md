@@ -1,6 +1,6 @@
 # bot-telegram
 
-A simple Telegram bot built with [grammY](https://grammy.dev) and TypeScript. It replies to `/start` with a greeting and echoes back any text message it receives.
+A simple Telegram bot built with [grammY](https://grammy.dev) and TypeScript. It replies to `/start` with a greeting, echoes back any text message it receives, and includes a few extra commands (gold prices, today's date, and connecting a Trello account).
 
 ## 1. Create a bot with BotFather
 
@@ -21,6 +21,8 @@ Then open `.env` and set:
 ```
 BOT_TOKEN=your-token-here
 ```
+
+To use `/connect_trello`, also create a Trello API key at [trello.com/power-ups/admin](https://trello.com/power-ups/admin) and set it as `TRELLO_API_KEY` in `.env`. Connected accounts are stored locally in `data/bot.db` (a SQLite file, gitignored) — never commit it, since it holds user tokens.
 
 ## 3. Install and run
 

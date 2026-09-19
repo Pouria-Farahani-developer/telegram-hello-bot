@@ -10,11 +10,13 @@
     "build": "tsc"
   },
   "dependencies": {
+    "better-sqlite3": "^13.0.3",
     "dotenv": "^16.4.5",
     "grammy": "^1.30.0",
     "jalaali-js": "^2.0.1"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^22.10.2",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
