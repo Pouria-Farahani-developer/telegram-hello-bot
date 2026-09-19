@@ -29,6 +29,7 @@ const mainKeyboard = new Keyboard()
   .text("Today")
   .row()
   .text("Gold Price")
+  .text("Connect Trello")
   .resized();
 
 // Persian names for weekdays (indexed by JS Date#getDay(), 0 = Sunday) and months.
@@ -184,6 +185,24 @@ function buildTrelloAuthorizeUrl(apiKey: string): string {
   return `https://trello.com/1/authorize?${params.toString()}`;
 }
 
+// Shared handler for both /connect_trello and the "Connect Trello" button.
+async function startTrelloConnection(ctx: MyContext): Promise<void> {
+  if (!trelloApiKey) {
+    await ctx.reply("اتصال به Trello در حال حاضر پیکربندی نشده است.");
+    return;
+  }
+
+  ctx.session.awaitingTrelloToken = true;
+  await ctx.reply(
+    [
+      "برای اتصال حساب Trello خود:",
+      `۱. این لینک را باز کنید: ${buildTrelloAuthorizeUrl(trelloApiKey)}`,
+      "۲. روی Allow بزنید.",
+      "۳. توکنی که نمایش داده می‌شود را کپی کرده و همینجا برای من ارسال کنید.",
+    ].join("\n")
+  );
+}
+
 // Checks a pasted Trello token against the API, then saves it or reports failure.
 // The token itself is never logged, only whether the check succeeded.
 async function handleTrelloToken(ctx: MyContext, pastedToken: string): Promise<void> {
@@ -229,22 +248,7 @@ bot.command("menu", (ctx) =>
 bot.command("today", (ctx) => ctx.reply(formatTodayMessage(new Date())));
 bot.command("gold", replyWithGoldPrice);
 
-bot.command("connect_trello", async (ctx) => {
-  if (!trelloApiKey) {
-    await ctx.reply("اتصال به Trello در حال حاضر پیکربندی نشده است.");
-    return;
-  }
-
-  ctx.session.awaitingTrelloToken = true;
-  await ctx.reply(
-    [
-      "برای اتصال حساب Trello خود:",
-      `۱. این لینک را باز کنید: ${buildTrelloAuthorizeUrl(trelloApiKey)}`,
-      "۲. روی Allow بزنید.",
-      "۳. توکنی که نمایش داده می‌شود را کپی کرده و همینجا برای من ارسال کنید.",
-    ].join("\n")
-  );
-});
+bot.command("connect_trello", startTrelloConnection);
 
 bot.command("disconnect_trello", (ctx) => {
   const userId = ctx.from?.id;
@@ -259,6 +263,7 @@ bot.hears("Restart", (ctx) =>
 );
 bot.hears("Today", (ctx) => ctx.reply(formatTodayMessage(new Date())));
 bot.hears("Gold Price", replyWithGoldPrice);
+bot.hears("Connect Trello", startTrelloConnection);
 
 // Inline menu option taps: update the message and drop the keyboard.
 const optionLabels: Record<string, string> = {
