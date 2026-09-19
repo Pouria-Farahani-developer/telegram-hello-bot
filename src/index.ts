@@ -357,17 +357,15 @@ function formatDueDate(due: string): string {
   });
 }
 
-// A card together with the pipeline stage it's showing under: the target list its
-// "advance" button should move it to, and the label for that button.
-interface StagedCard {
-  card: TrelloCard;
-  targetListId: string;
-  buttonLabel: string;
+// One of the three pipeline lists (todo/doing/done), whichever were actually found.
+interface PipelineStage {
+  listId: string;
+  listName: string;
 }
 
-// Shared handler for both /tasks and the "Tasks" button. Shows cards from the selected
-// (todo) list and the auto-detected "doing" list, each with a button to the next stage:
-// todo → doing, doing → done. A stage with no detected target list gets no button.
+// Shared handler for both /tasks and the "Tasks" button. Shows cards from every known
+// stage (todo, doing if found, done if found); each card gets one button per OTHER
+// stage, side by side, so a card can move to either of the other two lists directly.
 async function replyWithTasks(ctx: MyContext): Promise<void> {
   const connection = requireTrelloConnection(ctx);
   if (!connection) {
@@ -382,41 +380,46 @@ async function replyWithTasks(ctx: MyContext): Promise<void> {
   }
 
   try {
-    const stages: { listId: string; targetListId: string | null; buttonLabel: string }[] = [
-      { listId: selection.listId, targetListId: selection.doingListId, buttonLabel: "➡️ Doing" },
+    // Fetch real, current list names (not just ids) so button labels stay accurate
+    // even if a list gets renamed after /select_board.
+    const boardLists = await fetchTrelloLists(connection.apiKey, connection.userToken, selection.boardId);
+    const nameOf = (listId: string) => boardLists.find((l) => l.id === listId)?.name ?? listId;
+
+    const stages: PipelineStage[] = [
+      { listId: selection.listId, listName: nameOf(selection.listId) },
+      ...(selection.doingListId
+        ? [{ listId: selection.doingListId, listName: nameOf(selection.doingListId) }]
+        : []),
+      ...(selection.doneListId
+        ? [{ listId: selection.doneListId, listName: nameOf(selection.doneListId) }]
+        : []),
     ];
-    if (selection.doingListId) {
-      stages.push({
-        listId: selection.doingListId,
-        targetListId: selection.doneListId,
-        buttonLabel: "✅ Mark done",
-      });
-    }
 
-    const staged: StagedCard[] = [];
-    for (const stage of stages) {
-      const cards = await fetchTrelloCards(connection.apiKey, connection.userToken, stage.listId);
-      for (const card of cards) {
-        if (stage.targetListId) {
-          staged.push({ card, targetListId: stage.targetListId, buttonLabel: stage.buttonLabel });
-        } else {
-          staged.push({ card, targetListId: "", buttonLabel: "" });
-        }
-      }
-    }
+    const cardsByStage = await Promise.all(
+      stages.map((stage) => fetchTrelloCards(connection.apiKey, connection.userToken, stage.listId))
+    );
 
-    if (staged.length === 0) {
-      await ctx.reply(`هیچ کارتی در لیست «${selection.listName}» نیست 🎉`);
+    if (cardsByStage.every((cards) => cards.length === 0)) {
+      await ctx.reply(`هیچ کارتی در بورد «${selection.boardName}» پیدا نشد 🎉`);
       return;
     }
 
-    // One message per card, each with its own button, so advancing one only edits that message.
-    for (const { card, targetListId, buttonLabel } of staged) {
-      const dueLine = card.due ? `\n📅 موعد: ${formatDueDate(card.due)}` : "";
-      const keyboard = targetListId
-        ? new InlineKeyboard().text(buttonLabel, `advance_card:${card.id}:${targetListId}`)
-        : undefined;
-      await ctx.reply(`📌 ${card.name}${dueLine}`, keyboard && { reply_markup: keyboard });
+    // One message per card, each with its own row of buttons, so moving one card
+    // only edits that message.
+    for (let stageIndex = 0; stageIndex < stages.length; stageIndex++) {
+      const currentStage = stages[stageIndex];
+      const otherStages = stages.filter((_, i) => i !== stageIndex);
+
+      for (const card of cardsByStage[stageIndex]) {
+        const dueLine = card.due ? `\n📅 موعد: ${formatDueDate(card.due)}` : "";
+        const keyboard = new InlineKeyboard();
+        for (const target of otherStages) {
+          keyboard.text(`➡️ ${target.listName}`, `advance_card:${card.id}:${target.listId}`);
+        }
+        await ctx.reply(`📌 ${card.name} [${currentStage.listName}]${dueLine}`, {
+          reply_markup: keyboard,
+        });
+      }
     }
   } catch (error) {
     console.error("Failed to fetch Trello cards:", error);
@@ -592,10 +595,17 @@ bot.callbackQuery(/^advance_card:([^:]+):(.+)$/, async (ctx) => {
 
     // Label the confirmation using whichever known stage the card landed in.
     const selection = getSelection(connection.userId);
-    const doneLabel = targetListId === selection?.doneListId ? "✅ انجام شد" : "➡️ منتقل شد";
+    let resultLabel = "➡️ منتقل شد";
+    if (targetListId === selection?.doneListId) {
+      resultLabel = "✅ انجام شد";
+    } else if (targetListId === selection?.doingListId) {
+      resultLabel = "🔧 به Doing منتقل شد";
+    } else if (targetListId === selection?.listId) {
+      resultLabel = "↩️ به Todo برگشت";
+    }
 
     const originalText = ctx.callbackQuery.message?.text ?? "کارت";
-    await ctx.editMessageText(`${originalText}\n\n${doneLabel}`, {
+    await ctx.editMessageText(`${originalText}\n\n${resultLabel}`, {
       reply_markup: new InlineKeyboard(),
     });
     await ctx.answerCallbackQuery();
