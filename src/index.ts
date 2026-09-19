@@ -1,7 +1,13 @@
 import "dotenv/config";
 import { Bot, Context, InlineKeyboard, Keyboard, session, SessionFlavor } from "grammy";
 import { isLeapJalaaliYear, j2d, toJalaali } from "jalaali-js";
-import { deleteTrelloToken, saveTrelloToken } from "./db.js";
+import {
+  deleteTrelloToken,
+  getTrelloToken,
+  saveBoardSelection,
+  saveListSelection,
+  saveTrelloToken,
+} from "./db.js";
 
 const token = process.env.BOT_TOKEN;
 if (!token) {
@@ -231,6 +237,72 @@ async function handleTrelloToken(ctx: MyContext, pastedToken: string): Promise<v
   }
 }
 
+// A Trello board or list, as returned by the API when only `fields=name` is requested.
+interface TrelloEntity {
+  id: string;
+  name: string;
+}
+
+async function fetchTrelloJson<T>(url: string): Promise<T> {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Trello request failed with status ${response.status}`);
+  }
+  return (await response.json()) as T;
+}
+
+function fetchTrelloBoards(apiKey: string, userToken: string): Promise<TrelloEntity[]> {
+  return fetchTrelloJson(
+    `https://api.trello.com/1/members/me/boards?key=${apiKey}&token=${userToken}&fields=name`
+  );
+}
+
+function fetchTrelloBoard(apiKey: string, userToken: string, boardId: string): Promise<TrelloEntity> {
+  return fetchTrelloJson(
+    `https://api.trello.com/1/boards/${boardId}?key=${apiKey}&token=${userToken}&fields=name`
+  );
+}
+
+function fetchTrelloLists(
+  apiKey: string,
+  userToken: string,
+  boardId: string
+): Promise<TrelloEntity[]> {
+  return fetchTrelloJson(
+    `https://api.trello.com/1/boards/${boardId}/lists?key=${apiKey}&token=${userToken}&fields=name`
+  );
+}
+
+function fetchTrelloList(apiKey: string, userToken: string, listId: string): Promise<TrelloEntity> {
+  return fetchTrelloJson(
+    `https://api.trello.com/1/lists/${listId}?key=${apiKey}&token=${userToken}&fields=name`
+  );
+}
+
+// Builds one inline button per Trello entity, each row containing a single button.
+function buildEntityKeyboard(
+  entities: TrelloEntity[],
+  callbackPrefix: (entity: TrelloEntity) => string
+): InlineKeyboard {
+  const keyboard = new InlineKeyboard();
+  for (const entity of entities) {
+    keyboard.text(entity.name, callbackPrefix(entity)).row();
+  }
+  return keyboard;
+}
+
+// Returns the caller's id, API key, and Trello token if they're connected, otherwise null.
+// Callers decide how to report a missing connection (ctx.reply vs. editMessageText).
+function requireTrelloConnection(
+  ctx: MyContext
+): { userId: number; apiKey: string; userToken: string } | null {
+  const userId = ctx.from?.id;
+  const userToken = userId ? getTrelloToken(userId) : null;
+  return trelloApiKey && userId && userToken
+    ? { userId, apiKey: trelloApiKey, userToken }
+    : null;
+}
+
 // Inline keyboard shown by /menu, with one callback_data value per option.
 const optionsKeyboard = new InlineKeyboard()
   .text("Option A", "opt_a")
@@ -257,6 +329,30 @@ bot.command("disconnect_trello", (ctx) => {
   ctx.reply("حساب Trello شما قطع شد.");
 });
 
+bot.command("select_board", async (ctx) => {
+  const connection = requireTrelloConnection(ctx);
+  if (!connection) {
+    await ctx.reply("ابتدا با /connect_trello حساب Trello خود را وصل کنید.");
+    return;
+  }
+
+  try {
+    const boards = await fetchTrelloBoards(connection.apiKey, connection.userToken);
+    if (boards.length === 0) {
+      await ctx.reply("هیچ بوردی در حساب Trello شما پیدا نشد.");
+      return;
+    }
+
+    const keyboard = buildEntityKeyboard(boards, (board) => `select_board:${board.id}`);
+    await ctx.reply("یکی از بوردهای خود را انتخاب کنید:", { reply_markup: keyboard });
+  } catch (error) {
+    console.error("Failed to fetch Trello boards:", error);
+    await ctx.reply(
+      "مشکلی در دریافت بوردهای Trello پیش آمد. لطفاً دوباره با /connect_trello تلاش کنید."
+    );
+  }
+});
+
 // Reply keyboard buttons trigger the same behavior as their matching commands.
 bot.hears("Restart", (ctx) =>
   ctx.reply("Hello! I'm a simple bot 👋", { reply_markup: mainKeyboard })
@@ -281,6 +377,75 @@ for (const [data, label] of Object.entries(optionLabels)) {
     await ctx.answerCallbackQuery();
   });
 }
+
+// Board tapped in /select_board's keyboard: show that board's lists next.
+bot.callbackQuery(/^select_board:(.+)$/, async (ctx) => {
+  const boardId = ctx.match[1];
+  const connection = requireTrelloConnection(ctx);
+  if (!connection) {
+    await ctx.editMessageText("اتصال Trello شما یافت نشد. لطفاً دوباره با /connect_trello تلاش کنید.");
+    await ctx.answerCallbackQuery();
+    return;
+  }
+
+  try {
+    const [board, lists] = await Promise.all([
+      fetchTrelloBoard(connection.apiKey, connection.userToken, boardId),
+      fetchTrelloLists(connection.apiKey, connection.userToken, boardId),
+    ]);
+
+    if (lists.length === 0) {
+      await ctx.editMessageText(`بورد «${board.name}» هیچ لیستی ندارد.`);
+      await ctx.answerCallbackQuery();
+      return;
+    }
+
+    const keyboard = buildEntityKeyboard(lists, (list) => `select_list:${boardId}:${list.id}`);
+    await ctx.editMessageText(`لیست را از بورد «${board.name}» انتخاب کنید:`, {
+      reply_markup: keyboard,
+    });
+    await ctx.answerCallbackQuery();
+  } catch (error) {
+    console.error("Failed to fetch Trello lists:", error);
+    await ctx.editMessageText(
+      "مشکلی در دریافت لیست‌های Trello پیش آمد. لطفاً دوباره با /connect_trello تلاش کنید."
+    );
+    await ctx.answerCallbackQuery();
+  }
+});
+
+// List tapped in the board's keyboard: save the board+list selection and confirm.
+bot.callbackQuery(/^select_list:([^:]+):(.+)$/, async (ctx) => {
+  const [, boardId, listId] = ctx.match;
+  const connection = requireTrelloConnection(ctx);
+  if (!connection) {
+    await ctx.editMessageText("اتصال Trello شما یافت نشد. لطفاً دوباره با /connect_trello تلاش کنید.");
+    await ctx.answerCallbackQuery();
+    return;
+  }
+
+  try {
+    const [board, list] = await Promise.all([
+      fetchTrelloBoard(connection.apiKey, connection.userToken, boardId),
+      fetchTrelloList(connection.apiKey, connection.userToken, listId),
+    ]);
+
+    saveBoardSelection(connection.userId, board.id, board.name);
+    saveListSelection(connection.userId, list.id, list.name);
+
+    await ctx.editMessageText(
+      `✅ به بورد «${board.name}» و لیست «${list.name}» وصل شدید.\nدستور /tasks هنوز اضافه نشده — در مرحله بعد میاد.`,
+      { reply_markup: new InlineKeyboard() }
+    );
+    await ctx.answerCallbackQuery();
+  } catch (error) {
+    console.error("Failed to save Trello board/list selection:", error);
+    await ctx.editMessageText(
+      "مشکلی در ذخیره انتخاب شما پیش آمد. لطفاً دوباره با /connect_trello تلاش کنید."
+    );
+    await ctx.answerCallbackQuery();
+  }
+});
 
 // Captures the message right after /connect_trello and treats it as the pasted token.
 // Slash commands are left alone so /disconnect_trello etc. still work while waiting.
