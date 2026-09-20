@@ -41,7 +41,6 @@ const mainKeyboard = new Keyboard()
   .text("Gold Price")
   .text("Connect Trello")
   .row()
-  .text("Select Board")
   .text("Tasks")
   .resized();
 
@@ -304,7 +303,8 @@ function requireTrelloConnection(
     : null;
 }
 
-// Shared handler for both /select_board and the "Select Board" button.
+// First step of the /tasks flow when no board is selected yet: shows a board picker.
+// Not bound to its own command/button anymore — startTasksMenu falls back to this.
 async function startBoardSelection(ctx: MyContext): Promise<void> {
   const connection = requireTrelloConnection(ctx);
   if (!connection) {
@@ -365,7 +365,7 @@ interface PipelineStage {
 }
 
 // Fetches the board's current lists and returns whichever of todo/doing/done stages
-// exist, with fresh names (in case a list was renamed since /select_board).
+// exist, with fresh names (in case a list was renamed since the board was picked).
 async function getPipelineStages(
   apiKey: string,
   userToken: string,
@@ -399,7 +399,7 @@ async function replyWithStageTasks(
 
   const selection = getSelection(connection.userId);
   if (!selection) {
-    await ctx.reply("ابتدا با /select_board یک بورد و لیست انتخاب کنید.");
+    await ctx.reply("ابتدا روی دکمه‌ی Tasks بزنید تا یک بورد انتخاب کنید.");
     return;
   }
 
@@ -411,9 +411,7 @@ async function replyWithStageTasks(
         : selection.doneListId;
   if (!targetListId) {
     const missingName = stageKey === "doing" ? "Doing" : "Done";
-    await ctx.reply(
-      `لیست «${missingName}» برای این بورد پیدا نشد. با /select_board دوباره تلاش کنید.`
-    );
+    await ctx.reply(`لیست «${missingName}» برای این بورد پیدا نشد.`);
     return;
   }
 
@@ -456,8 +454,21 @@ const stageLabels: Record<"todo" | "doing" | "done", string> = {
   done: "Done",
 };
 
-// Shared handler for both /tasks and the "Tasks" button: shows an inline menu of
-// available stages (same UX as /select_board), rather than sending cards directly.
+// Builds the "which stage?" inline keyboard, offering only stages that were found.
+function buildStageMenuKeyboard(selection: TrelloSelection): InlineKeyboard {
+  const keyboard = new InlineKeyboard().text(stageLabels.todo, "show_stage:todo");
+  if (selection.doingListId) {
+    keyboard.text(stageLabels.doing, "show_stage:doing");
+  }
+  if (selection.doneListId) {
+    keyboard.text(stageLabels.done, "show_stage:done");
+  }
+  return keyboard;
+}
+
+// Shared handler for both /tasks and the "Tasks" button. No board picked yet? Start
+// there first (folding the old /select_board step into this same flow). Otherwise go
+// straight to the "which stage?" menu.
 async function startTasksMenu(ctx: MyContext): Promise<void> {
   const connection = requireTrelloConnection(ctx);
   if (!connection) {
@@ -467,19 +478,13 @@ async function startTasksMenu(ctx: MyContext): Promise<void> {
 
   const selection = getSelection(connection.userId);
   if (!selection) {
-    await ctx.reply("ابتدا با /select_board یک بورد و لیست انتخاب کنید.");
+    await startBoardSelection(ctx);
     return;
   }
 
-  const keyboard = new InlineKeyboard().text(stageLabels.todo, "show_stage:todo");
-  if (selection.doingListId) {
-    keyboard.text(stageLabels.doing, "show_stage:doing");
-  }
-  if (selection.doneListId) {
-    keyboard.text(stageLabels.done, "show_stage:done");
-  }
-
-  await ctx.reply("کدام دسته از کارت‌ها را می‌خواهید ببینید؟", { reply_markup: keyboard });
+  await ctx.reply("کدام دسته از کارت‌ها را می‌خواهید ببینید؟", {
+    reply_markup: buildStageMenuKeyboard(selection),
+  });
 }
 
 // Inline keyboard shown by /menu, with one callback_data value per option.
@@ -508,7 +513,6 @@ bot.command("disconnect_trello", (ctx) => {
   ctx.reply("حساب Trello شما قطع شد.");
 });
 
-bot.command("select_board", startBoardSelection);
 bot.command("tasks", startTasksMenu);
 
 // Reply keyboard buttons trigger the same behavior as their matching commands.
@@ -518,7 +522,6 @@ bot.hears("Restart", (ctx) =>
 bot.hears("Today", (ctx) => ctx.reply(formatTodayMessage(new Date())));
 bot.hears("Gold Price", replyWithGoldPrice);
 bot.hears("Connect Trello", startTrelloConnection);
-bot.hears("Select Board", startBoardSelection);
 bot.hears("Tasks", startTasksMenu);
 
 // Inline menu option taps: update the message and drop the keyboard.
@@ -562,7 +565,7 @@ bot.callbackQuery(/^select_board:(.+)$/, async (ctx) => {
 
     if (!todoList) {
       await ctx.editMessageText(
-        `لیستی به نام «To Do» روی بورد «${board.name}» پیدا نشد. لطفاً یکی از لیست‌های بورد را به این اسم تغییر دهید و دوباره /select_board را بزنید.`,
+        `لیستی به نام «To Do» روی بورد «${board.name}» پیدا نشد. لطفاً یکی از لیست‌های بورد را به این اسم تغییر دهید و دوباره روی Tasks بزنید.`,
         { reply_markup: new InlineKeyboard() }
       );
       await ctx.answerCallbackQuery();
@@ -579,11 +582,14 @@ bot.callbackQuery(/^select_board:(.+)$/, async (ctx) => {
     );
     const missingNote =
       missing.length > 0
-        ? `\n(لیست ${missing.join(" و ")} پیدا نشد، پس گزینه‌ی مربوطه در /tasks غیرفعال می‌ماند.)`
+        ? `\n(لیست ${missing.join(" و ")} پیدا نشد، پس گزینه‌ی مربوطه در دسترس نیست.)`
         : "";
+
+    // Continue the flow right here instead of asking the user to tap Tasks again.
+    const selection = getSelection(connection.userId)!;
     await ctx.editMessageText(
-      `✅ به بورد «${board.name}» وصل شدید (لیست‌های To Do/Doing/Done به‌صورت خودکار شناسایی شدند).${missingNote}\nبرای دیدن کارت‌ها /tasks را بزنید.`,
-      { reply_markup: new InlineKeyboard() }
+      `✅ به بورد «${board.name}» وصل شدید (لیست‌های To Do/Doing/Done به‌صورت خودکار شناسایی شدند).${missingNote}\nکدام دسته از کارت‌ها را می‌خواهید ببینید؟`,
+      { reply_markup: buildStageMenuKeyboard(selection) }
     );
     await ctx.answerCallbackQuery();
   } catch (error) {
