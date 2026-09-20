@@ -467,11 +467,17 @@ function buildStageMenuKeyboard(selection: TrelloSelection): InlineKeyboard {
   return keyboard;
 }
 
+// Message shown above the manual list-picker, for a board with no Doing/Done list
+// to build a Todo/Doing/Done stage menu from.
+function manualListPickerText(boardName: string): string {
+  return `بورد «${boardName}» پایپ‌لاین Todo/Doing/Done ندارد. یکی از لیست‌های زیر را برای مشاهده‌ی کارت‌ها (فقط‌خواندنی) انتخاب کنید:`;
+}
+
 // Shared handler for both /tasks and the "Tasks" button. No board picked yet? Start
 // there first (folding the old /select_board step into this same flow). A board with
-// no Doing/Done list has nothing to choose between, so skip straight to its cards
-// (read-only, since replyWithStageTasks naturally adds no buttons with no other stage).
-// Otherwise show the normal "which stage?" menu.
+// no Doing/Done list has no fixed stage to jump to, so — same as right after picking
+// such a board — show a fresh picker of its real lists every time, instead of always
+// reopening whichever one was viewed last. Otherwise show the normal "which stage?" menu.
 async function startTasksMenu(ctx: MyContext): Promise<void> {
   const connection = requireTrelloConnection(ctx);
   if (!connection) {
@@ -486,7 +492,19 @@ async function startTasksMenu(ctx: MyContext): Promise<void> {
   }
 
   if (!selection.doingListId && !selection.doneListId) {
-    await replyWithStageTasks(ctx, "todo");
+    try {
+      const lists = await fetchTrelloLists(connection.apiKey, connection.userToken, selection.boardId);
+      const keyboard = buildEntityKeyboard(
+        lists,
+        (list) => `manual_list:${selection.boardId}:${list.id}`
+      );
+      await ctx.reply(manualListPickerText(selection.boardName), { reply_markup: keyboard });
+    } catch (error) {
+      console.error("Failed to fetch Trello lists:", error);
+      await ctx.reply(
+        "مشکلی در دریافت لیست‌های Trello پیش آمد. لطفاً دوباره با /connect_trello تلاش کنید."
+      );
+    }
     return;
   }
 
@@ -551,9 +569,10 @@ for (const [data, label] of Object.entries(optionLabels)) {
   });
 }
 
-// Board tapped in /select_board's keyboard: auto-detect the To Do/Doing/Done lists
-// from its lists and save the whole selection in one step (no separate list picker —
-// /tasks' own inline menu is where the user later picks which stage to view).
+// Board tapped in /select_board's keyboard: auto-detect the To Do/Doing/Done lists.
+// A board needs at least one of Doing/Done to count as having a pipeline at all —
+// otherwise (same rule startTasksMenu uses) it falls back to a plain list picker,
+// whether none of the three names matched or only "To Do" happened to match alone.
 bot.callbackQuery(/^select_board:(.+)$/, async (ctx) => {
   const boardId = ctx.match[1];
   const connection = requireTrelloConnection(ctx);
@@ -572,23 +591,9 @@ bot.callbackQuery(/^select_board:(.+)$/, async (ctx) => {
     const todoList = lists.find((item) => /to.?do/i.test(item.name));
     const doingList = lists.find((item) => /doing/i.test(item.name));
     const doneList = lists.find((item) => /done/i.test(item.name));
+    const hasPipeline = Boolean(doingList || doneList);
 
-    // None of the three recognized lists exist: let the user pick any real list on
-    // the board instead, and show it read-only (no pipeline means no "advance" move).
-    if (!todoList && !doingList && !doneList) {
-      const keyboard = buildEntityKeyboard(
-        lists,
-        (list) => `manual_list:${boardId}:${list.id}`
-      );
-      await ctx.editMessageText(
-        `بورد «${board.name}» لیستی به نام To Do/Doing/Done ندارد. یکی از لیست‌های زیر را برای مشاهده‌ی کارت‌ها (فقط‌خواندنی) انتخاب کنید:`,
-        { reply_markup: keyboard }
-      );
-      await ctx.answerCallbackQuery();
-      return;
-    }
-
-    if (!todoList) {
+    if (hasPipeline && !todoList) {
       await ctx.editMessageText(
         `لیستی به نام «To Do» روی بورد «${board.name}» پیدا نشد. لطفاً یکی از لیست‌های بورد را به این اسم تغییر دهید و دوباره روی Tasks بزنید.`,
         { reply_markup: new InlineKeyboard() }
@@ -597,22 +602,17 @@ bot.callbackQuery(/^select_board:(.+)$/, async (ctx) => {
       return;
     }
 
-    saveBoardSelection(connection.userId, board.id, board.name);
-    saveListSelection(connection.userId, todoList.id, todoList.name);
-    saveDoingListSelection(connection.userId, doingList?.id ?? null);
-    saveDoneListSelection(connection.userId, doneList?.id ?? null);
-
-    // No Doing/Done found alongside To Do: nothing to choose between, so skip the
-    // stage menu and show the To Do cards directly (read-only, same as startTasksMenu).
-    if (!doingList && !doneList) {
-      await ctx.editMessageText(
-        `✅ به بورد «${board.name}» وصل شدید. لیست «Doing/Done» پیدا نشد، در حال نمایش کارت‌های «${todoList.name}»...`,
-        { reply_markup: new InlineKeyboard() }
-      );
+    if (!hasPipeline) {
+      const keyboard = buildEntityKeyboard(lists, (list) => `manual_list:${boardId}:${list.id}`);
+      await ctx.editMessageText(manualListPickerText(board.name), { reply_markup: keyboard });
       await ctx.answerCallbackQuery();
-      await replyWithStageTasks(ctx, "todo");
       return;
     }
+
+    saveBoardSelection(connection.userId, board.id, board.name);
+    saveListSelection(connection.userId, todoList!.id, todoList!.name);
+    saveDoingListSelection(connection.userId, doingList?.id ?? null);
+    saveDoneListSelection(connection.userId, doneList?.id ?? null);
 
     const missing = [!doingList && "«Doing»", !doneList && "«Done»"].filter(
       (name): name is string => Boolean(name)
