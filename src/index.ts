@@ -37,9 +37,10 @@ bot.use(session({ initial: (): SessionData => ({ awaitingTrelloToken: false }) }
 const mainKeyboard = new Keyboard()
   .text("Restart")
   .text("Today")
-  .row()
   .text("Gold Price")
+  .row()
   .text("Connect Trello")
+  .text("Disconnect Trello")
   .row()
   .text("Tasks")
   .text("Change Board")
@@ -513,32 +514,24 @@ async function startTasksMenu(ctx: MyContext): Promise<void> {
   });
 }
 
-// Inline keyboard shown by /menu, with one callback_data value per option.
-const optionsKeyboard = new InlineKeyboard()
-  .text("Option A", "opt_a")
-  .text("Option B", "opt_b")
-  .text("Option C", "opt_c");
+// Shared handler for both /disconnect_trello and the "Disconnect Trello" button.
+function disconnectTrello(ctx: MyContext) {
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  deleteTrelloToken(userId);
+  ctx.reply("حساب Trello شما قطع شد.");
+}
 
 // /start shows the greeting and attaches the reply keyboard.
 bot.command("start", (ctx) =>
   ctx.reply("Hello! I'm a simple bot 👋", { reply_markup: mainKeyboard })
 );
 
-bot.command("menu", (ctx) =>
-  ctx.reply("Choose an option:", { reply_markup: optionsKeyboard })
-);
 bot.command("today", (ctx) => ctx.reply(formatTodayMessage(new Date())));
 bot.command("gold", replyWithGoldPrice);
 
 bot.command("connect_trello", startTrelloConnection);
-
-bot.command("disconnect_trello", (ctx) => {
-  const userId = ctx.from?.id;
-  if (!userId) return;
-  deleteTrelloToken(userId);
-  ctx.reply("حساب Trello شما قطع شد.");
-});
-
+bot.command("disconnect_trello", disconnectTrello);
 bot.command("tasks", startTasksMenu);
 bot.command("change_board", startBoardSelection);
 
@@ -549,25 +542,9 @@ bot.hears("Restart", (ctx) =>
 bot.hears("Today", (ctx) => ctx.reply(formatTodayMessage(new Date())));
 bot.hears("Gold Price", replyWithGoldPrice);
 bot.hears("Connect Trello", startTrelloConnection);
+bot.hears("Disconnect Trello", disconnectTrello);
 bot.hears("Tasks", startTasksMenu);
 bot.hears("Change Board", startBoardSelection);
-
-// Inline menu option taps: update the message and drop the keyboard.
-const optionLabels: Record<string, string> = {
-  opt_a: "Option A",
-  opt_b: "Option B",
-  opt_c: "Option C",
-};
-
-for (const [data, label] of Object.entries(optionLabels)) {
-  bot.callbackQuery(data, async (ctx) => {
-    // Passing an empty keyboard clears the buttons on the edited message.
-    await ctx.editMessageText(`You selected: ${label}`, {
-      reply_markup: new InlineKeyboard(),
-    });
-    await ctx.answerCallbackQuery();
-  });
-}
 
 // Board tapped in /select_board's keyboard: auto-detect the To Do/Doing/Done lists.
 // A board needs at least one of Doing/Done to count as having a pipeline at all —
@@ -744,8 +721,5 @@ bot.on("message:text", async (ctx, next) => {
   ctx.session.awaitingTrelloToken = false;
   await handleTrelloToken(ctx, ctx.message.text.trim());
 });
-
-// Fallback: echo any other text message.
-bot.on("message:text", (ctx) => ctx.reply(ctx.message.text));
 
 bot.start();
