@@ -42,10 +42,7 @@ const mainKeyboard = new Keyboard()
   .text("Connect Trello")
   .row()
   .text("Select Board")
-  .row()
-  .text("Todo Tasks")
-  .text("Doing Tasks")
-  .text("Done Tasks")
+  .text("Tasks")
   .resized();
 
 // Persian names for weekdays (indexed by JS Date#getDay(), 0 = Sunday) and months.
@@ -452,9 +449,38 @@ async function replyWithStageTasks(
   }
 }
 
-const replyWithTodoTasks = (ctx: MyContext) => replyWithStageTasks(ctx, "todo");
-const replyWithDoingTasks = (ctx: MyContext) => replyWithStageTasks(ctx, "doing");
-const replyWithDoneTasks = (ctx: MyContext) => replyWithStageTasks(ctx, "done");
+// Display label for each stage key, used on the inline menu buttons below.
+const stageLabels: Record<"todo" | "doing" | "done", string> = {
+  todo: "Todo",
+  doing: "Doing",
+  done: "Done",
+};
+
+// Shared handler for both /tasks and the "Tasks" button: shows an inline menu of
+// available stages (same UX as /select_board), rather than sending cards directly.
+async function startTasksMenu(ctx: MyContext): Promise<void> {
+  const connection = requireTrelloConnection(ctx);
+  if (!connection) {
+    await ctx.reply("ابتدا با /connect_trello حساب Trello خود را وصل کنید.");
+    return;
+  }
+
+  const selection = getSelection(connection.userId);
+  if (!selection) {
+    await ctx.reply("ابتدا با /select_board یک بورد و لیست انتخاب کنید.");
+    return;
+  }
+
+  const keyboard = new InlineKeyboard().text(stageLabels.todo, "show_stage:todo");
+  if (selection.doingListId) {
+    keyboard.text(stageLabels.doing, "show_stage:doing");
+  }
+  if (selection.doneListId) {
+    keyboard.text(stageLabels.done, "show_stage:done");
+  }
+
+  await ctx.reply("کدام دسته از کارت‌ها را می‌خواهید ببینید؟", { reply_markup: keyboard });
+}
 
 // Inline keyboard shown by /menu, with one callback_data value per option.
 const optionsKeyboard = new InlineKeyboard()
@@ -483,9 +509,7 @@ bot.command("disconnect_trello", (ctx) => {
 });
 
 bot.command("select_board", startBoardSelection);
-bot.command("tasks_todo", replyWithTodoTasks);
-bot.command("tasks_doing", replyWithDoingTasks);
-bot.command("tasks_done", replyWithDoneTasks);
+bot.command("tasks", startTasksMenu);
 
 // Reply keyboard buttons trigger the same behavior as their matching commands.
 bot.hears("Restart", (ctx) =>
@@ -495,9 +519,7 @@ bot.hears("Today", (ctx) => ctx.reply(formatTodayMessage(new Date())));
 bot.hears("Gold Price", replyWithGoldPrice);
 bot.hears("Connect Trello", startTrelloConnection);
 bot.hears("Select Board", startBoardSelection);
-bot.hears("Todo Tasks", replyWithTodoTasks);
-bot.hears("Doing Tasks", replyWithDoingTasks);
-bot.hears("Done Tasks", replyWithDoneTasks);
+bot.hears("Tasks", startTasksMenu);
 
 // Inline menu option taps: update the message and drop the keyboard.
 const optionLabels: Record<string, string> = {
@@ -602,6 +624,16 @@ bot.callbackQuery(/^select_list:([^:]+):(.+)$/, async (ctx) => {
     );
     await ctx.answerCallbackQuery();
   }
+});
+
+// Stage tapped in /tasks's inline menu: clears the menu and sends that stage's cards.
+bot.callbackQuery(/^show_stage:(todo|doing|done)$/, async (ctx) => {
+  const stageKey = ctx.match[1] as "todo" | "doing" | "done";
+  await ctx.editMessageText(`نمایش کارت‌های ${stageLabels[stageKey]}...`, {
+    reply_markup: new InlineKeyboard(),
+  });
+  await ctx.answerCallbackQuery();
+  await replyWithStageTasks(ctx, stageKey);
 });
 
 // A stage-advance button tapped in /tasks (todo→doing or doing→done): moves the card
