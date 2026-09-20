@@ -468,8 +468,10 @@ function buildStageMenuKeyboard(selection: TrelloSelection): InlineKeyboard {
 }
 
 // Shared handler for both /tasks and the "Tasks" button. No board picked yet? Start
-// there first (folding the old /select_board step into this same flow). Otherwise go
-// straight to the "which stage?" menu.
+// there first (folding the old /select_board step into this same flow). A board with
+// no Doing/Done list has nothing to choose between, so skip straight to its cards
+// (read-only, since replyWithStageTasks naturally adds no buttons with no other stage).
+// Otherwise show the normal "which stage?" menu.
 async function startTasksMenu(ctx: MyContext): Promise<void> {
   const connection = requireTrelloConnection(ctx);
   if (!connection) {
@@ -480,6 +482,11 @@ async function startTasksMenu(ctx: MyContext): Promise<void> {
   const selection = getSelection(connection.userId);
   if (!selection) {
     await startBoardSelection(ctx);
+    return;
+  }
+
+  if (!selection.doingListId && !selection.doneListId) {
+    await replyWithStageTasks(ctx, "todo");
     return;
   }
 
@@ -566,6 +573,21 @@ bot.callbackQuery(/^select_board:(.+)$/, async (ctx) => {
     const doingList = lists.find((item) => /doing/i.test(item.name));
     const doneList = lists.find((item) => /done/i.test(item.name));
 
+    // None of the three recognized lists exist: let the user pick any real list on
+    // the board instead, and show it read-only (no pipeline means no "advance" move).
+    if (!todoList && !doingList && !doneList) {
+      const keyboard = buildEntityKeyboard(
+        lists,
+        (list) => `manual_list:${boardId}:${list.id}`
+      );
+      await ctx.editMessageText(
+        `بورد «${board.name}» لیستی به نام To Do/Doing/Done ندارد. یکی از لیست‌های زیر را برای مشاهده‌ی کارت‌ها (فقط‌خواندنی) انتخاب کنید:`,
+        { reply_markup: keyboard }
+      );
+      await ctx.answerCallbackQuery();
+      return;
+    }
+
     if (!todoList) {
       await ctx.editMessageText(
         `لیستی به نام «To Do» روی بورد «${board.name}» پیدا نشد. لطفاً یکی از لیست‌های بورد را به این اسم تغییر دهید و دوباره روی Tasks بزنید.`,
@@ -579,6 +601,18 @@ bot.callbackQuery(/^select_board:(.+)$/, async (ctx) => {
     saveListSelection(connection.userId, todoList.id, todoList.name);
     saveDoingListSelection(connection.userId, doingList?.id ?? null);
     saveDoneListSelection(connection.userId, doneList?.id ?? null);
+
+    // No Doing/Done found alongside To Do: nothing to choose between, so skip the
+    // stage menu and show the To Do cards directly (read-only, same as startTasksMenu).
+    if (!doingList && !doneList) {
+      await ctx.editMessageText(
+        `✅ به بورد «${board.name}» وصل شدید. لیست «Doing/Done» پیدا نشد، در حال نمایش کارت‌های «${todoList.name}»...`,
+        { reply_markup: new InlineKeyboard() }
+      );
+      await ctx.answerCallbackQuery();
+      await replyWithStageTasks(ctx, "todo");
+      return;
+    }
 
     const missing = [!doingList && "«Doing»", !doneList && "«Done»"].filter(
       (name): name is string => Boolean(name)
@@ -597,6 +631,48 @@ bot.callbackQuery(/^select_board:(.+)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
   } catch (error) {
     console.error("Failed to save Trello board selection:", error);
+    await ctx.editMessageText(
+      "مشکلی در ذخیره انتخاب شما پیش آمد. لطفاً دوباره با /connect_trello تلاش کنید."
+    );
+    await ctx.answerCallbackQuery();
+  }
+});
+
+// List tapped in the "no To Do/Doing/Done" fallback keyboard: save it as a plain,
+// single-list selection (no doing/done list) and show its cards read-only.
+bot.callbackQuery(/^manual_list:([^:]+):(.+)$/, async (ctx) => {
+  const [, boardId, listId] = ctx.match;
+  const connection = requireTrelloConnection(ctx);
+  if (!connection) {
+    await ctx.editMessageText("اتصال Trello شما یافت نشد. لطفاً دوباره با /connect_trello تلاش کنید.");
+    await ctx.answerCallbackQuery();
+    return;
+  }
+
+  try {
+    const [board, lists] = await Promise.all([
+      fetchTrelloBoard(connection.apiKey, connection.userToken, boardId),
+      fetchTrelloLists(connection.apiKey, connection.userToken, boardId),
+    ]);
+
+    const list = lists.find((item) => item.id === listId);
+    if (!list) {
+      throw new Error("Selected list no longer exists on the board");
+    }
+
+    saveBoardSelection(connection.userId, board.id, board.name);
+    saveListSelection(connection.userId, list.id, list.name);
+    saveDoingListSelection(connection.userId, null);
+    saveDoneListSelection(connection.userId, null);
+
+    await ctx.editMessageText(
+      `✅ لیست «${list.name}» از بورد «${board.name}» انتخاب شد. در حال نمایش کارت‌ها (فقط‌خواندنی)...`,
+      { reply_markup: new InlineKeyboard() }
+    );
+    await ctx.answerCallbackQuery();
+    await replyWithStageTasks(ctx, "todo");
+  } catch (error) {
+    console.error("Failed to save manual Trello list selection:", error);
     await ctx.editMessageText(
       "مشکلی در ذخیره انتخاب شما پیش آمد. لطفاً دوباره با /connect_trello تلاش کنید."
     );
