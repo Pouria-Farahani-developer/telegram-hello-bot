@@ -42,6 +42,7 @@ const mainKeyboard = new Keyboard()
   .text("Connect Trello")
   .row()
   .text("Tasks")
+  .text("Change Board")
   .resized();
 
 // Persian names for weekdays (indexed by JS Date#getDay(), 0 = Sunday) and months.
@@ -303,8 +304,8 @@ function requireTrelloConnection(
     : null;
 }
 
-// First step of the /tasks flow when no board is selected yet: shows a board picker.
-// Not bound to its own command/button anymore — startTasksMenu falls back to this.
+// Shows a board picker. Used as the first step of /tasks when no board is selected
+// yet, and directly by /change_board / the "Change Board" button to switch boards.
 async function startBoardSelection(ctx: MyContext): Promise<void> {
   const connection = requireTrelloConnection(ctx);
   if (!connection) {
@@ -514,6 +515,7 @@ bot.command("disconnect_trello", (ctx) => {
 });
 
 bot.command("tasks", startTasksMenu);
+bot.command("change_board", startBoardSelection);
 
 // Reply keyboard buttons trigger the same behavior as their matching commands.
 bot.hears("Restart", (ctx) =>
@@ -523,6 +525,7 @@ bot.hears("Today", (ctx) => ctx.reply(formatTodayMessage(new Date())));
 bot.hears("Gold Price", replyWithGoldPrice);
 bot.hears("Connect Trello", startTrelloConnection);
 bot.hears("Tasks", startTasksMenu);
+bot.hears("Change Board", startBoardSelection);
 
 // Inline menu option taps: update the message and drop the keyboard.
 const optionLabels: Record<string, string> = {
