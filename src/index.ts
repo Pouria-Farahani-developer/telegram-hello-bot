@@ -538,7 +538,9 @@ for (const [data, label] of Object.entries(optionLabels)) {
   });
 }
 
-// Board tapped in /select_board's keyboard: show that board's lists next.
+// Board tapped in /select_board's keyboard: auto-detect the To Do/Doing/Done lists
+// from its lists and save the whole selection in one step (no separate list picker —
+// /tasks' own inline menu is where the user later picks which stage to view).
 bot.callbackQuery(/^select_board:(.+)$/, async (ctx) => {
   const boardId = ctx.match[1];
   const connection = requireTrelloConnection(ctx);
@@ -554,71 +556,38 @@ bot.callbackQuery(/^select_board:(.+)$/, async (ctx) => {
       fetchTrelloLists(connection.apiKey, connection.userToken, boardId),
     ]);
 
-    if (lists.length === 0) {
-      await ctx.editMessageText(`بورد «${board.name}» هیچ لیستی ندارد.`);
+    const todoList = lists.find((item) => /to.?do/i.test(item.name));
+    const doingList = lists.find((item) => /doing/i.test(item.name));
+    const doneList = lists.find((item) => /done/i.test(item.name));
+
+    if (!todoList) {
+      await ctx.editMessageText(
+        `لیستی به نام «To Do» روی بورد «${board.name}» پیدا نشد. لطفاً یکی از لیست‌های بورد را به این اسم تغییر دهید و دوباره /select_board را بزنید.`,
+        { reply_markup: new InlineKeyboard() }
+      );
       await ctx.answerCallbackQuery();
       return;
     }
 
-    const keyboard = buildEntityKeyboard(lists, (list) => `select_list:${boardId}:${list.id}`);
-    await ctx.editMessageText(`لیست را از بورد «${board.name}» انتخاب کنید:`, {
-      reply_markup: keyboard,
-    });
-    await ctx.answerCallbackQuery();
-  } catch (error) {
-    console.error("Failed to fetch Trello lists:", error);
-    await ctx.editMessageText(
-      "مشکلی در دریافت لیست‌های Trello پیش آمد. لطفاً دوباره با /connect_trello تلاش کنید."
-    );
-    await ctx.answerCallbackQuery();
-  }
-});
-
-// List tapped in the board's keyboard: save the board+list selection and confirm.
-bot.callbackQuery(/^select_list:([^:]+):(.+)$/, async (ctx) => {
-  const [, boardId, listId] = ctx.match;
-  const connection = requireTrelloConnection(ctx);
-  if (!connection) {
-    await ctx.editMessageText("اتصال Trello شما یافت نشد. لطفاً دوباره با /connect_trello تلاش کنید.");
-    await ctx.answerCallbackQuery();
-    return;
-  }
-
-  try {
-    const [board, lists] = await Promise.all([
-      fetchTrelloBoard(connection.apiKey, connection.userToken, boardId),
-      fetchTrelloLists(connection.apiKey, connection.userToken, boardId),
-    ]);
-
-    const list = lists.find((item) => item.id === listId);
-    if (!list) {
-      throw new Error("Selected list no longer exists on the board");
-    }
-    // Auto-detect the "doing" and "done" lists so /tasks can offer a next-stage button:
-    // cards in the selected (todo) list advance to "doing", cards in "doing" advance to "done".
-    const doingList = lists.find((item) => /doing/i.test(item.name));
-    const doneList = lists.find((item) => /done/i.test(item.name));
-
     saveBoardSelection(connection.userId, board.id, board.name);
-    saveListSelection(connection.userId, list.id, list.name);
+    saveListSelection(connection.userId, todoList.id, todoList.name);
     saveDoingListSelection(connection.userId, doingList?.id ?? null);
     saveDoneListSelection(connection.userId, doneList?.id ?? null);
 
-    const missing = [
-      !doingList && "«Doing»",
-      !doneList && "«Done»",
-    ].filter((name): name is string => Boolean(name));
+    const missing = [!doingList && "«Doing»", !doneList && "«Done»"].filter(
+      (name): name is string => Boolean(name)
+    );
     const missingNote =
       missing.length > 0
-        ? `\n(لیست ${missing.join(" و ")} پیدا نشد، پس دکمه‌ی انتقال مربوطه غیرفعال می‌ماند.)`
+        ? `\n(لیست ${missing.join(" و ")} پیدا نشد، پس گزینه‌ی مربوطه در /tasks غیرفعال می‌ماند.)`
         : "";
     await ctx.editMessageText(
-      `✅ به بورد «${board.name}» و لیست «${list.name}» وصل شدید.${missingNote}\nبرای دیدن کارت‌ها /tasks را بزنید.`,
+      `✅ به بورد «${board.name}» وصل شدید (لیست‌های To Do/Doing/Done به‌صورت خودکار شناسایی شدند).${missingNote}\nبرای دیدن کارت‌ها /tasks را بزنید.`,
       { reply_markup: new InlineKeyboard() }
     );
     await ctx.answerCallbackQuery();
   } catch (error) {
-    console.error("Failed to save Trello board/list selection:", error);
+    console.error("Failed to save Trello board selection:", error);
     await ctx.editMessageText(
       "مشکلی در ذخیره انتخاب شما پیش آمد. لطفاً دوباره با /connect_trello تلاش کنید."
     );
