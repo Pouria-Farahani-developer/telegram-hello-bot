@@ -47,14 +47,24 @@ export function saveTrelloToken(telegramUserId: number, token: string): void {
   ).run(telegramUserId, encrypt(token));
 }
 
-// Note: rows saved before encryption was introduced still hold plaintext and
-// will fail to decrypt here; this learning project doesn't include a
-// migration/backfill for those pre-existing rows.
+// Returns null if the user has no saved token, or if the stored value can't be
+// decrypted (legacy plaintext row, corrupted data, or a since-rotated
+// TOKEN_ENCRYPTION_KEY) — treated the same as "not connected" so the caller's
+// existing "run /connect_trello" messaging applies, and the unusable row is
+// cleared so it doesn't keep failing on every subsequent attempt.
 export function getTrelloToken(telegramUserId: number): string | null {
   const row = db
     .prepare(`SELECT trello_token FROM trello_accounts WHERE telegram_user_id = ?`)
     .get(telegramUserId) as { trello_token: string } | undefined;
-  return row ? decrypt(row.trello_token) : null;
+  if (!row) return null;
+
+  try {
+    return decrypt(row.trello_token);
+  } catch (error) {
+    console.error(`Failed to decrypt Trello token for user ${telegramUserId}, clearing it:`, error);
+    deleteTrelloToken(telegramUserId);
+    return null;
+  }
 }
 
 export function deleteTrelloToken(telegramUserId: number): void {

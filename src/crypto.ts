@@ -1,20 +1,9 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import { TOKEN_ENCRYPTION_KEY } from "./config.js";
 
-// TOKEN_ENCRYPTION_KEY is populated by dotenv, which is loaded by config.ts.
-// config.ts is always imported (directly or transitively) before any module
-// that imports db.ts (and therefore this module) — see bot.ts's import order,
-// where "./config.js" precedes the handler imports that pull in db.ts — so
-// process.env is already populated by the time this file is evaluated.
-const keyHex = process.env.TOKEN_ENCRYPTION_KEY;
-if (!keyHex) {
-  throw new Error(
-    "TOKEN_ENCRYPTION_KEY is not set. Generate one with: node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\""
-  );
-}
-const key = Buffer.from(keyHex, "hex");
-if (key.length !== 32) {
-  throw new Error("TOKEN_ENCRYPTION_KEY must be a 32-byte value encoded as 64 hex characters.");
-}
+// config.ts has already validated TOKEN_ENCRYPTION_KEY is present and is a
+// 32-byte value encoded as 64 hex characters.
+const key = Buffer.from(TOKEN_ENCRYPTION_KEY, "hex");
 
 // Encrypts a string with AES-256-GCM, returning base64(iv || authTag || ciphertext).
 export function encrypt(plaintext: string): string {
