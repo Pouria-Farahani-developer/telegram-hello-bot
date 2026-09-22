@@ -32,4 +32,11 @@ registerTrelloAuthHandlers(bot);
 registerTrelloBoardHandlers(bot);
 registerTrelloTaskHandlers(bot);
 
+bot.catch((err) => {
+  console.error(`Error while handling update ${err.ctx.update.update_id}:`, err.error);
+});
+
 bot.start();
+
+process.once("SIGINT", () => bot.stop());
+process.once("SIGTERM", () => bot.stop());
