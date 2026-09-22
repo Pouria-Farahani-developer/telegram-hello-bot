@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
+import { decrypt, encrypt } from "./crypto.js";
 
 // Keep the database file out of the repo root, grouped with other local data.
 const dataDir = path.join(process.cwd(), "data");
@@ -36,19 +37,24 @@ for (const column of [
 }
 
 // Inserts or replaces the token for a user, keeping their original created_at.
+// The token is encrypted at rest (AES-256-GCM, see crypto.ts) so a leaked DB
+// file alone doesn't expose Trello credentials.
 export function saveTrelloToken(telegramUserId: number, token: string): void {
   db.prepare(
     `INSERT INTO trello_accounts (telegram_user_id, trello_token)
      VALUES (?, ?)
      ON CONFLICT(telegram_user_id) DO UPDATE SET trello_token = excluded.trello_token`
-  ).run(telegramUserId, token);
+  ).run(telegramUserId, encrypt(token));
 }
 
+// Note: rows saved before encryption was introduced still hold plaintext and
+// will fail to decrypt here; this learning project doesn't include a
+// migration/backfill for those pre-existing rows.
 export function getTrelloToken(telegramUserId: number): string | null {
   const row = db
     .prepare(`SELECT trello_token FROM trello_accounts WHERE telegram_user_id = ?`)
     .get(telegramUserId) as { trello_token: string } | undefined;
-  return row?.trello_token ?? null;
+  return row ? decrypt(row.trello_token) : null;
 }
 
 export function deleteTrelloToken(telegramUserId: number): void {

@@ -24,6 +24,18 @@ BOT_TOKEN=your-token-here
 
 To use `/connect_trello`, also create a Trello API key at [trello.com/power-ups/admin](https://trello.com/power-ups/admin) and set it as `TRELLO_API_KEY` in `.env`. Connected accounts (and their chosen board, picked the first time `/tasks` is used) are stored locally in `data/bot.db` (a SQLite file, gitignored) — never commit it, since it holds user tokens.
 
+Trello tokens are encrypted at rest with AES-256-GCM using a key read from `TOKEN_ENCRYPTION_KEY`. Generate one and set it in `.env`:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+```
+TOKEN_ENCRYPTION_KEY=paste-the-generated-value-here
+```
+
+Keep this key secret and back it up — losing it makes every stored Trello token undecryptable.
+
 ## 3. Install and run
 
 ```bash
